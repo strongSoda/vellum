@@ -1,6 +1,7 @@
 import { FlashList } from '@shopify/flash-list';
 import React, { useState } from 'react';
-import { Platform, SafeAreaView, StatusBar, Text, TouchableOpacity, View } from 'react-native';
+import { Platform, StatusBar, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { BookCard } from '../../components/BookCard';
 import { DetailsModal } from '../../components/DetailsModal';
 import { useLibrary } from '../../context/LibraryContext';

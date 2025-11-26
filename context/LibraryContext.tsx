@@ -1,9 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Directory, File, Paths } from 'expo-file-system'; // STRICT NEW API
+import { Directory, File, Paths } from 'expo-file-system'; // Strict New API for Downloads
 import * as Network from 'expo-network';
 import * as Notifications from 'expo-notifications';
 import React, { createContext, useContext, useEffect, useState } from 'react';
 
+// Types
 type BookStatus = 'toread' | 'reading' | 'completed';
 export type SavedBook = {
   id: number;
@@ -29,9 +30,12 @@ type LibraryContextType = {
 
 const LibraryContext = createContext<LibraryContextType>({} as any);
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({ shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: false, shouldShowBanner: true, shouldShowList: true }),
-});
+// FIX: Wrap handler setup to prevent Expo Go crashes
+try {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({ shouldShowAlert: true, shouldPlaySound: false, shouldSetBadge: false, shouldShowBanner: true, shouldShowList: true }),
+  });
+} catch (e) { console.log("Notifications not supported in this environment"); }
 
 export const LibraryProvider = ({ children }: { children: React.ReactNode }) => {
   const [savedBooks, setSavedBooks] = useState<SavedBook[]>([]);
@@ -50,14 +54,14 @@ export const LibraryProvider = ({ children }: { children: React.ReactNode }) => 
 
   const loadLibrary = async () => {
     try {
-      const stored = await AsyncStorage.getItem('@vellum_lib_v9');
+      const stored = await AsyncStorage.getItem('@vellum_lib_v10');
       if (stored) setSavedBooks(JSON.parse(stored));
     } catch (e) { console.error(e); }
   };
 
   const persist = async (newData: SavedBook[]) => {
     setSavedBooks(newData);
-    await AsyncStorage.setItem('@vellum_lib_v9', JSON.stringify(newData));
+    await AsyncStorage.setItem('@vellum_lib_v10', JSON.stringify(newData));
   };
 
   const startDownload = async (book: any) => {
@@ -65,45 +69,44 @@ export const LibraryProvider = ({ children }: { children: React.ReactNode }) => 
     setActiveDownload(book);
 
     try {
-      // 1. Setup Directory (New API)
+      // 1. Setup Directory
       const booksDir = new Directory(Paths.document, 'VellumLibrary');
-      if (!booksDir.exists) {
-        booksDir.create();
-      }
+      if (!booksDir.exists) booksDir.create();
       
       const safeTitle = book.title.replace(/[^a-z0-9]/gi, '_').toLowerCase().substring(0, 30);
 
       // 2. Download EPUB
       const epubUrl = book.formats['application/epub+zip'];
       let epubUri = undefined;
-      
       if (epubUrl) {
           const epubFile = new File(booksDir, `${safeTitle}_${book.id}.epub`);
-          // Manual Delete (New API method) prevents "Destination exists" error
-          if (epubFile.exists) epubFile.delete(); 
-          
+          if (epubFile.exists) epubFile.delete(); // Clean up old file
           const result = await File.downloadFileAsync(epubUrl, epubFile);
           epubUri = result.uri;
       }
 
-      // 3. Download HTML
+      // 3. Download HTML (Crucial for Reader)
       const htmlUrl = book.formats['text/html'] || book.formats['text/html; charset=utf-8'];
       let htmlUri = undefined;
-      
       if (htmlUrl) {
           const htmlFile = new File(booksDir, `${safeTitle}_${book.id}.html`);
-          if (htmlFile.exists) htmlFile.delete(); 
-          
+          if (htmlFile.exists) htmlFile.delete();
           const result = await File.downloadFileAsync(htmlUrl, htmlFile);
           htmlUri = result.uri;
       }
 
+      // 4. Save to Library
       await saveBook(book, 'reading', epubUri, htmlUri);
 
-      await Notifications.scheduleNotificationAsync({
-        content: { title: "Book Ready", body: `${book.title} is ready to read.` },
-        trigger: null,
-      });
+      // FIX: Safe Notification Trigger
+      try {
+        await Notifications.scheduleNotificationAsync({
+          content: { title: "Book Ready", body: `${book.title} is ready to read.` },
+          trigger: null,
+        });
+      } catch (error) {
+        console.log("Notification failed (Expected in Expo Go)");
+      }
 
     } catch (e) {
       console.error("Download failed", e);

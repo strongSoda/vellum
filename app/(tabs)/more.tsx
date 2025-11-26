@@ -2,7 +2,8 @@ import { DEVELOPER_PROFILE, PROJECTS } from '@/constants/Portfolio';
 import { Ionicons } from '@expo/vector-icons';
 import * as WebBrowser from 'expo-web-browser';
 import React from 'react';
-import { Image, Linking, Platform, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Image, Linking, Platform, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 const THEME = { background: '#050505', accent: '#2DDA93', card: '#161616', text: '#FFF', textMuted: '#888' };
 
