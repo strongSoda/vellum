@@ -62,8 +62,14 @@ export const DetailsModal = ({ book, visible, onClose }: { book: any; visible: b
   const authorLife = book.authors[0]?.birth_year ? `${book.authors[0].birth_year} – ${book.authors[0].death_year || '?'}` : '';
 
   const handleReadInternal = () => {
-      if (libraryEntry?.readerUri) setReaderVisible(true);
-      else Alert.alert("Unavailable", "Internal reader format not available.");
+      // Debug log to verify path exists
+      console.log("Opening Reader with URI:", libraryEntry?.readerUri);
+      
+      if (libraryEntry?.readerUri) {
+          setReaderVisible(true);
+      } else {
+          Alert.alert("Unavailable", "Book file missing. Please delete and re-download.");
+      }
   };
 
   const handleReadExternal = async () => {
