@@ -1,6 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { File, Paths } from 'expo-file-system';
-import { deleteAsync } from 'expo-file-system/legacy';
+import { File, Paths } from 'expo-file-system'; // STRICT NEW API
 import * as MediaLibrary from 'expo-media-library';
 import * as Sharing from 'expo-sharing';
 import React, { useEffect, useRef, useState } from 'react';
@@ -69,17 +68,12 @@ export const DetailsModal = ({ book, visible, onClose }: { book: any; visible: b
 
   const handleReadExternal = async () => {
       if (libraryEntry?.localUri) {
-          if (await Sharing.isAvailableAsync()) {
-              await Sharing.shareAsync(libraryEntry.localUri);
-          } else {
-              Alert.alert("Error", "Sharing not available.");
-          }
+          if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(libraryEntry.localUri);
+          else Alert.alert("Error", "Sharing not available.");
       }
   };
 
-  const handleDownloadAction = () => {
-      startDownload(book);
-  };
+  const handleDownloadAction = () => startDownload(book);
 
   const handleSaveCover = async () => {
     if (!coverUrl) return;
@@ -89,13 +83,24 @@ export const DetailsModal = ({ book, visible, onClose }: { book: any; visible: b
         const perm = await requestPermission();
         if (!perm.granted) return;
       }
-      const fileName = `cover_${book.id}.jpg`;
-      const file = new File(Paths.cache, fileName);
-      await deleteAsync(file.uri, { idempotent: true });
+      
+      // New API: Create File instance
+      const file = new File(Paths.cache, `cover_${book.id}.jpg`);
+      
+      // Safe delete if exists
+      if (file.exists) file.delete();
+      
+      // Download using static method
       await File.downloadFileAsync(coverUrl, file);
+      
       await MediaLibrary.saveToLibraryAsync(file.uri);
       Alert.alert("Success", "Cover art saved.");
-    } catch (e) { console.error(e); } finally { setDownloadingCover(false); }
+    } catch (e) { 
+        console.error(e); 
+        Alert.alert("Error", "Failed to save cover.");
+    } finally { 
+        setDownloadingCover(false); 
+    }
   };
 
   return (
@@ -118,17 +123,14 @@ export const DetailsModal = ({ book, visible, onClose }: { book: any; visible: b
             <Text style={styles.author}>{authorName}</Text>
             {authorLife ? <Text style={styles.lifeSpan}>{authorLife}</Text> : null}
 
-            {/* --- DUAL ACTIONS --- */}
             {isDownloaded ? (
                 <View style={styles.actionRow}>
-                    <TouchableOpacity style={[styles.mainBtn, styles.readBtn, {flex: 1}]} onPress={handleReadInternal}>
+                    <TouchableOpacity style={[styles.mainBtn, styles.readBtn, {flex: 1, marginRight: 8}]} onPress={handleReadInternal}>
                         <Text style={styles.btnText}>READ NOW</Text>
                     </TouchableOpacity>
-                    
                     <TouchableOpacity style={[styles.mainBtn, styles.secondaryActionBtn, {flex: 1}]} onPress={handleReadExternal}>
                         <Text style={[styles.btnText, {color: '#FFF'}]}>OPEN EPUB</Text>
                     </TouchableOpacity>
-
                     <TouchableOpacity style={styles.iconBtn} onPress={() => removeBook(book.id)}>
                         <Ionicons name="bookmark" size={24} color={THEME.accent} />
                     </TouchableOpacity>
@@ -136,12 +138,7 @@ export const DetailsModal = ({ book, visible, onClose }: { book: any; visible: b
             ) : (
                 <View style={styles.actionRow}>
                     <View style={{flex: 1}}>
-                        <ShineButton 
-                            onPress={handleDownloadAction} 
-                            text="DOWNLOAD BOOK"
-                            disabled={!epubUrl || isDownloadingThis}
-                            loading={isDownloadingThis}
-                        />
+                        <ShineButton onPress={handleDownloadAction} text="DOWNLOAD BOOK" disabled={!epubUrl || isDownloadingThis} loading={isDownloadingThis} />
                     </View>
                     <TouchableOpacity style={styles.iconBtn} onPress={() => saveBook(book)}>
                         <Ionicons name="bookmark-outline" size={24} color={THEME.accent} />
@@ -158,9 +155,8 @@ export const DetailsModal = ({ book, visible, onClose }: { book: any; visible: b
                 <View style={styles.libraryPanel}>
                     <Text style={styles.sectionHeader}>Reading Progress</Text>
                     <View style={styles.statusRow}>
-                        {['to read', 'reading', 'completed'].map((s) => (
-                            <TouchableOpacity key={s} onPress={() => updateStatus(book.id, s as any)}
-                                style={[styles.statusChip, libraryEntry.status === s && { backgroundColor: THEME.accent }]}>
+                        {['toread', 'reading', 'completed'].map((s) => (
+                            <TouchableOpacity key={s} onPress={() => updateStatus(book.id, s as any)} style={[styles.statusChip, libraryEntry.status === s && { backgroundColor: THEME.accent }]}>
                                 <Text style={[styles.statusText, libraryEntry.status === s && { color: '#000', fontWeight: 'bold' }]}>{s.toUpperCase()}</Text>
                             </TouchableOpacity>
                         ))}
@@ -187,12 +183,7 @@ export const DetailsModal = ({ book, visible, onClose }: { book: any; visible: b
       </View>
     </Modal>
 
-    <ReaderModal 
-        visible={readerVisible} 
-        book={book} 
-        localUri={libraryEntry?.readerUri}
-        onClose={() => setReaderVisible(false)} 
-    />
+    <ReaderModal visible={readerVisible} book={book} localUri={libraryEntry?.readerUri} onClose={() => setReaderVisible(false)} />
     </>
   );
 };

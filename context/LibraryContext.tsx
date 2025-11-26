@@ -1,13 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Directory, File, Paths } from 'expo-file-system'; // STRICT NEW API
 import * as Network from 'expo-network';
-import React, { createContext, useContext, useEffect, useState } from 'react';
-// FIX: Specific import for legacy delete to avoid crash
-import { Directory, File, Paths } from 'expo-file-system';
-import { deleteAsync } from 'expo-file-system/legacy';
 import * as Notifications from 'expo-notifications';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 
-// Types
-type BookStatus = 'to read' | 'reading' | 'completed';
+type BookStatus = 'toread' | 'reading' | 'completed';
 export type SavedBook = {
   id: number;
   book: any;
@@ -53,14 +50,14 @@ export const LibraryProvider = ({ children }: { children: React.ReactNode }) => 
 
   const loadLibrary = async () => {
     try {
-      const stored = await AsyncStorage.getItem('@vellum_library_v6');
+      const stored = await AsyncStorage.getItem('@vellum_lib_v9');
       if (stored) setSavedBooks(JSON.parse(stored));
     } catch (e) { console.error(e); }
   };
 
   const persist = async (newData: SavedBook[]) => {
     setSavedBooks(newData);
-    await AsyncStorage.setItem('@vellum_library_v6', JSON.stringify(newData));
+    await AsyncStorage.setItem('@vellum_lib_v9', JSON.stringify(newData));
   };
 
   const startDownload = async (book: any) => {
@@ -68,34 +65,37 @@ export const LibraryProvider = ({ children }: { children: React.ReactNode }) => 
     setActiveDownload(book);
 
     try {
+      // 1. Setup Directory (New API)
       const booksDir = new Directory(Paths.document, 'VellumLibrary');
-      if (!booksDir.exists) await booksDir.create();
+      if (!booksDir.exists) {
+        booksDir.create();
+      }
       
       const safeTitle = book.title.replace(/[^a-z0-9]/gi, '_').toLowerCase().substring(0, 30);
 
-      // 1. Download EPUB
+      // 2. Download EPUB
       const epubUrl = book.formats['application/epub+zip'];
       let epubUri = undefined;
       
       if (epubUrl) {
           const epubFile = new File(booksDir, `${safeTitle}_${book.id}.epub`);
-          // Legacy delete to prevent "Destination exists" error
-          await deleteAsync(epubFile.uri, { idempotent: true });
+          // Manual Delete (New API method) prevents "Destination exists" error
+          if (epubFile.exists) epubFile.delete(); 
           
-          const res = await File.downloadFileAsync(epubUrl, epubFile);
-          epubUri = res.uri;
+          const result = await File.downloadFileAsync(epubUrl, epubFile);
+          epubUri = result.uri;
       }
 
-      // 2. Download HTML
+      // 3. Download HTML
       const htmlUrl = book.formats['text/html'] || book.formats['text/html; charset=utf-8'];
       let htmlUri = undefined;
       
       if (htmlUrl) {
           const htmlFile = new File(booksDir, `${safeTitle}_${book.id}.html`);
-          await deleteAsync(htmlFile.uri, { idempotent: true });
+          if (htmlFile.exists) htmlFile.delete(); 
           
-          const res = await File.downloadFileAsync(htmlUrl, htmlFile);
-          htmlUri = res.uri;
+          const result = await File.downloadFileAsync(htmlUrl, htmlFile);
+          htmlUri = result.uri;
       }
 
       await saveBook(book, 'reading', epubUri, htmlUri);
@@ -112,7 +112,7 @@ export const LibraryProvider = ({ children }: { children: React.ReactNode }) => 
     }
   };
 
-  const saveBook = async (book: any, status: BookStatus = 'to read', localUri?: string, readerUri?: string) => {
+  const saveBook = async (book: any, status: BookStatus = 'toread', localUri?: string, readerUri?: string) => {
     const existingIndex = savedBooks.findIndex(b => b.id === book.id);
     let newBooks = [...savedBooks];
     
