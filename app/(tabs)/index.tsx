@@ -1,16 +1,14 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { Platform, RefreshControl, StatusBar, Text, TextInput, TouchableOpacity, useWindowDimensions, View } from 'react-native';
-// FIX: Use Safe Area Context
 import { Ionicons } from '@expo/vector-icons';
 import { FlashList } from '@shopify/flash-list';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Platform, RefreshControl, StatusBar, Text, TextInput, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BookCard } from '../../components/BookCard';
 import { DetailsModal } from '../../components/DetailsModal';
 import { FloatingDownloadBar } from '../../components/FloatingDownloadBar';
+import { ReaderModal } from '../../components/Reader'; // Import the fixed Reader
 import { STATIC_BOOKS } from '../../constants/StaticBooks';
 import { useLibrary } from '../../context/LibraryContext';
-
-const API_URL = 'https://gutendex.com/books';
 
 export default function HomeScreen() {
   const { activeDownload } = useLibrary();
@@ -20,6 +18,11 @@ export default function HomeScreen() {
   const [books, setBooks] = useState<any[]>(STATIC_BOOKS); 
   const [refreshing, setRefreshing] = useState(false);
   const [selectedBook, setSelectedBook] = useState<any>(null);
+  
+  // --- Reader State (Root Level) ---
+  const [readerVisible, setReaderVisible] = useState(false);
+  const [readerUri, setReaderUri] = useState<string | null>(null);
+  const [readerBook, setReaderBook] = useState<any>(null);
 
   const [search, setSearch] = useState('');
   const [activeSort, setActiveSort] = useState<'popular' | 'alphabetical' | 'new'>('popular');
@@ -67,6 +70,13 @@ export default function HomeScreen() {
           const freshData = await res.json();
           if (freshData.id) setSelectedBook(freshData);
       } catch (e) { /* Ignore */ }
+  };
+
+  // --- Handler passed to DetailsModal ---
+  const handleOpenReader = (uri: string) => {
+      setReaderUri(uri);
+      setReaderBook(selectedBook);
+      setReaderVisible(true);
   };
 
   const getSortLabel = () => {
@@ -133,7 +143,21 @@ export default function HomeScreen() {
         }
       />
 
-      <DetailsModal book={selectedBook} visible={!!selectedBook} onClose={() => setSelectedBook(null)} />
+      {/* --- MODALS ARE NOW SIBLINGS --- */}
+      <DetailsModal 
+        book={selectedBook} 
+        visible={!!selectedBook} 
+        onClose={() => setSelectedBook(null)} 
+        onRead={handleOpenReader} // Pass callback
+      />
+
+      <ReaderModal 
+        visible={readerVisible} 
+        book={readerBook} 
+        localUri={readerUri} 
+        onClose={() => setReaderVisible(false)} 
+      />
+
       <FloatingDownloadBar onPress={() => activeDownload && setSelectedBook(activeDownload)} />
 
     </SafeAreaView>

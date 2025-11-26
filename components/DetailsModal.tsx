@@ -1,16 +1,16 @@
 import { Ionicons } from '@expo/vector-icons';
-import { File, Paths } from 'expo-file-system'; // STRICT NEW API
+import { File, Paths } from 'expo-file-system';
 import * as MediaLibrary from 'expo-media-library';
 import * as Sharing from 'expo-sharing';
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Dimensions, Easing, Image, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLibrary } from '../context/LibraryContext';
-import { ReaderModal } from './Reader';
 
 const { width } = Dimensions.get('window');
 const THEME = { background: '#050505', accent: '#2DDA93', text: '#FFF', textMuted: '#888' };
 
+// ... ShineButton Code (Keep exactly as you have it) ...
 const ShineButton = ({ onPress, text, disabled, loading, isReadMode, style }: any) => {
   const shineAnim = useRef(new Animated.Value(-100)).current;
   useEffect(() => {
@@ -36,13 +36,13 @@ const ShineButton = ({ onPress, text, disabled, loading, isReadMode, style }: an
   );
 };
 
-export const DetailsModal = ({ book, visible, onClose }: { book: any; visible: boolean; onClose: () => void }) => {
+// FIX: Added 'onRead' prop
+export const DetailsModal = ({ book, visible, onClose, onRead }: { book: any; visible: boolean; onClose: () => void, onRead: (uri: string) => void }) => {
   const insets = useSafeAreaInsets();
   const [permissionResponse, requestPermission] = MediaLibrary.usePermissions();
   const { savedBooks, updateStatus, updateNotes, removeBook, saveBook, startDownload, activeDownload } = useLibrary();
   
   const [downloadingCover, setDownloadingCover] = useState(false);
-  const [readerVisible, setReaderVisible] = useState(false);
   const [notes, setNotes] = useState('');
 
   const libraryEntry = book ? savedBooks.find(b => b.id === book.id) : null;
@@ -62,19 +62,19 @@ export const DetailsModal = ({ book, visible, onClose }: { book: any; visible: b
   const authorLife = book.authors[0]?.birth_year ? `${book.authors[0].birth_year} – ${book.authors[0].death_year || '?'}` : '';
 
   const handleReadInternal = () => {
-      // Debug log to verify path exists
-      console.log("Opening Reader with URI:", libraryEntry?.readerUri);
-      
       if (libraryEntry?.readerUri) {
-          setReaderVisible(true);
+          // FIX: Close this modal, then trigger parent to open Reader
+          onClose();
+          setTimeout(() => onRead(libraryEntry.readerUri!), 300);
       } else {
-          Alert.alert("Unavailable", "Book file missing. Please delete and re-download.");
+          Alert.alert("Unavailable", "Internal reader format not available.");
       }
   };
 
   const handleReadExternal = async () => {
-      if (libraryEntry?.localUri) {
-          if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(libraryEntry.localUri);
+      const uri = libraryEntry?.localUri || libraryEntry?.readerUri;
+      if (uri) {
+          if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri);
           else Alert.alert("Error", "Sharing not available.");
       }
   };
@@ -89,28 +89,15 @@ export const DetailsModal = ({ book, visible, onClose }: { book: any; visible: b
         const perm = await requestPermission();
         if (!perm.granted) return;
       }
-      
-      // New API: Create File instance
       const file = new File(Paths.cache, `cover_${book.id}.jpg`);
-      
-      // Safe delete if exists
-      if (file.exists) file.delete();
-      
-      // Download using static method
+      if (file.exists) file.delete(); 
       await File.downloadFileAsync(coverUrl, file);
-      
       await MediaLibrary.saveToLibraryAsync(file.uri);
       Alert.alert("Success", "Cover art saved.");
-    } catch (e) { 
-        console.error(e); 
-        Alert.alert("Error", "Failed to save cover.");
-    } finally { 
-        setDownloadingCover(false); 
-    }
+    } catch (e) { console.error(e); } finally { setDownloadingCover(false); }
   };
 
   return (
-    <>
     <Modal animationType="slide" visible={visible} onRequestClose={onClose} presentationStyle="overFullScreen" transparent>
       <View style={styles.container}>
         {coverUrl && <Image source={{ uri: coverUrl }} style={styles.ambientBg} blurRadius={90} />}
@@ -157,6 +144,7 @@ export const DetailsModal = ({ book, visible, onClose }: { book: any; visible: b
                 <Text style={styles.secondaryBtnText}>{downloadingCover ? "Saving..." : "Save Cover Art"}</Text>
             </TouchableOpacity>
 
+            {/* Library/Metadata Sections unchanged... */}
             {libraryEntry && (
                 <View style={styles.libraryPanel}>
                     <Text style={styles.sectionHeader}>Reading Progress</Text>
@@ -170,16 +158,13 @@ export const DetailsModal = ({ book, visible, onClose }: { book: any; visible: b
                     <TextInput style={styles.notesInput} multiline placeholder="My notes..." placeholderTextColor="#555" value={notes} onChangeText={(t) => { setNotes(t); updateNotes(book.id, t); }} />
                 </View>
             )}
-
             <View style={styles.metaGrid}>
                 <View style={styles.metaItem}><Text style={styles.metaLabel}>DOWNLOADS</Text><Text style={styles.metaValue}>{book.download_count.toLocaleString()}</Text></View>
                 <View style={styles.metaItem}><Text style={styles.metaLabel}>LANGUAGE</Text><Text style={styles.metaValue}>{book.languages[0]?.toUpperCase()}</Text></View>
                 <View style={styles.metaItem}><Text style={styles.metaLabel}>COPYRIGHT</Text><Text style={styles.metaValue}>{book.copyright ? "YES" : "NO"}</Text></View>
                 <View style={styles.metaItem}><Text style={styles.metaLabel}>TYPE</Text><Text style={styles.metaValue}>{book.media_type}</Text></View>
             </View>
-
             <Text style={styles.desc}>{book.summaries?.[0] || "No summary available."}</Text>
-
             <View style={styles.tagRow}>
                 {[...(book.subjects || []), ...(book.bookshelves || [])].slice(0, 8).map((s: string, i: number) => (
                     <View key={i} style={styles.tag}><Text style={styles.tagText}>{s.replace('Category: ', '').split(' -- ')[0]}</Text></View>
@@ -188,13 +173,11 @@ export const DetailsModal = ({ book, visible, onClose }: { book: any; visible: b
         </ScrollView>
       </View>
     </Modal>
-
-    <ReaderModal visible={readerVisible} book={book} localUri={libraryEntry?.readerUri} onClose={() => setReaderVisible(false)} />
-    </>
   );
 };
 
 const styles = StyleSheet.create({
+  // ... (Styles unchanged from previous version) ...
   container: { flex: 1, backgroundColor: THEME.background },
   ambientBg: { ...StyleSheet.absoluteFillObject, opacity: 0.7 },
   overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', opacity: 0.88 },
