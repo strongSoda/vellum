@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { File, Paths } from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library';
 import * as Sharing from 'expo-sharing';
 import React, { useEffect, useRef, useState } from 'react';
@@ -10,7 +10,6 @@ import { useLibrary } from '../context/LibraryContext';
 const { width } = Dimensions.get('window');
 const THEME = { background: '#050505', accent: '#2DDA93', text: '#FFF', textMuted: '#888' };
 
-// ... ShineButton Code (Keep exactly as you have it) ...
 const ShineButton = ({ onPress, text, disabled, loading, isReadMode, style }: any) => {
   const shineAnim = useRef(new Animated.Value(-100)).current;
   useEffect(() => {
@@ -36,7 +35,6 @@ const ShineButton = ({ onPress, text, disabled, loading, isReadMode, style }: an
   );
 };
 
-// FIX: Added 'onRead' prop
 export const DetailsModal = ({ book, visible, onClose, onRead }: { book: any; visible: boolean; onClose: () => void, onRead: (uri: string) => void }) => {
   const insets = useSafeAreaInsets();
   const [permissionResponse, requestPermission] = MediaLibrary.usePermissions();
@@ -63,7 +61,6 @@ export const DetailsModal = ({ book, visible, onClose, onRead }: { book: any; vi
 
   const handleReadInternal = () => {
       if (libraryEntry?.readerUri) {
-          // FIX: Close this modal, then trigger parent to open Reader
           onClose();
           setTimeout(() => onRead(libraryEntry.readerUri!), 300);
       } else {
@@ -84,17 +81,44 @@ export const DetailsModal = ({ book, visible, onClose, onRead }: { book: any; vi
   const handleSaveCover = async () => {
     if (!coverUrl) return;
     setDownloadingCover(true);
+    
     try {
       if (!permissionResponse?.granted) {
         const perm = await requestPermission();
-        if (!perm.granted) return;
+        if (!perm.granted) {
+          setDownloadingCover(false);
+          return;
+        }
       }
-      const file = new File(Paths.cache, `cover_${book.id}.jpg`);
-      if (file.exists) file.delete(); 
-      await File.downloadFileAsync(coverUrl, file);
-      await MediaLibrary.saveToLibraryAsync(file.uri);
-      Alert.alert("Success", "Cover art saved.");
-    } catch (e) { console.error(e); } finally { setDownloadingCover(false); }
+      
+      // Download directly to cache using fetch
+      const response = await fetch(coverUrl);
+      if (!response.ok) throw new Error('Download failed');
+      
+      const blob = await response.blob();
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const result = reader.result as string;
+          resolve(result.split(',')[1]);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      
+      const filepath = FileSystem.cacheDirectory + `cover_${book.id}.jpg`;
+      await FileSystem.writeAsStringAsync(filepath, base64, {
+        encoding: FileSystem.EncodingType.Base64
+      });
+      
+      await MediaLibrary.saveToLibraryAsync(filepath);
+      Alert.alert("Success", "Cover art saved to your photo library.");
+      
+    } catch (e) {
+      Alert.alert("Error", "Could not save cover art. Please try again.");
+    } finally {
+      setDownloadingCover(false);
+    }
   };
 
   return (
@@ -144,7 +168,6 @@ export const DetailsModal = ({ book, visible, onClose, onRead }: { book: any; vi
                 <Text style={styles.secondaryBtnText}>{downloadingCover ? "Saving..." : "Save Cover Art"}</Text>
             </TouchableOpacity>
 
-            {/* Library/Metadata Sections unchanged... */}
             {libraryEntry && (
                 <View style={styles.libraryPanel}>
                     <Text style={styles.sectionHeader}>Reading Progress</Text>
@@ -177,7 +200,6 @@ export const DetailsModal = ({ book, visible, onClose, onRead }: { book: any; vi
 };
 
 const styles = StyleSheet.create({
-  // ... (Styles unchanged from previous version) ...
   container: { flex: 1, backgroundColor: THEME.background },
   ambientBg: { ...StyleSheet.absoluteFillObject, opacity: 0.7 },
   overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', opacity: 0.88 },

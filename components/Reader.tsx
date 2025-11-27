@@ -1,9 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
+import * as FileSystem from 'expo-file-system/legacy';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Modal, SafeAreaView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Modal, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
-// Use legacy reader for stable text reading
-import { readAsStringAsync } from 'expo-file-system/legacy';
 
 export const ReaderModal = ({ visible, book, onClose, localUri }: any) => {
   const [content, setContent] = useState<string | null>(null);
@@ -18,12 +18,24 @@ export const ReaderModal = ({ visible, book, onClose, localUri }: any) => {
   const loadBookContent = async () => {
     try {
       setLoading(true);
+      console.log('Loading book content from:', localUri);
       
-      // 1. Read the raw file content
-      let html = await readAsStringAsync(localUri, { encoding: 'utf8' });
+      // Verify file exists
+      const fileInfo = await FileSystem.getInfoAsync(localUri);
+      if (!fileInfo.exists) {
+        throw new Error('File does not exist at path: ' + localUri);
+      }
+      
+      console.log('File exists, size:', fileInfo.size);
+      
+      // Read the raw file content using legacy API
+      let html = await FileSystem.readAsStringAsync(localUri, { 
+        encoding: 'utf8'
+      });
 
-      // 2. Define our Custom Styles (Dark Mode & Typography)
-      // We use !important to override any weird styles the book might have.
+      console.log('File content loaded, length:', html.length);
+
+      // Define our Custom Styles (Dark Mode & Typography)
       const customCSS = `
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
         <style>
@@ -71,13 +83,20 @@ export const ReaderModal = ({ visible, book, onClose, localUri }: any) => {
         </style>
       `;
 
-      // 3. Inject our styles at the very top of the HTML
-      // This ensures they load before the content renders
+      // Inject our styles at the very top of the HTML
       setContent(customCSS + html);
+      console.log('Content prepared for display');
 
     } catch (e) {
       console.error("Reader Error:", e);
-      setContent("<h1>Error</h1><p>Could not load book.</p>");
+      if (e instanceof Error) {
+        console.error("Error message:", e.message);
+      }
+      setContent(`<html><body style="background: #050505; color: #fff; padding: 20px; font-family: system-ui;">
+        <h1>Error Loading Book</h1>
+        <p>Could not load the book content. The file may be corrupted or the path is incorrect.</p>
+        <p style="color: #888; font-size: 12px;">Path: ${localUri}</p>
+      </body></html>`);
     } finally {
       setLoading(false);
     }
@@ -91,35 +110,49 @@ export const ReaderModal = ({ visible, book, onClose, localUri }: any) => {
         <StatusBar barStyle="light-content" />
         
         <View style={styles.header}>
-            <TouchableOpacity onPress={onClose} style={styles.backBtn}>
-                <Ionicons name="chevron-down" size={24} color="#FFF" />
-            </TouchableOpacity>
-            <Text style={styles.headerTitle} numberOfLines={1}>{book.title}</Text>
-            <View style={{width: 40}} /> 
+          <TouchableOpacity onPress={onClose} style={styles.backBtn}>
+            <Ionicons name="chevron-down" size={24} color="#FFF" />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle} numberOfLines={1}>{book.title}</Text>
+          <View style={{width: 40}} /> 
         </View>
 
         <View style={styles.webviewContainer}>
-            {!loading && content ? (
-                <WebView 
-                    originWhitelist={['*']}
-                    source={{ html: content, baseUrl: '' }} 
-                    style={{ backgroundColor: '#050505', flex: 1 }}
-                    scalesPageToFit={false} // Let our meta viewport handle scaling
-                    showsVerticalScrollIndicator={true}
-                    javaScriptEnabled={true}
-                    // Only show content when fully loaded to avoid flashes
-                    startInLoadingState={true}
-                    renderLoading={() => (
-                        <View style={styles.center}>
-                            <ActivityIndicator size="large" color="#2DDA93" />
-                        </View>
-                    )}
-                />
-            ) : (
+          {!loading && content ? (
+            <WebView 
+              originWhitelist={['*']}
+              source={{ html: content, baseUrl: '' }} 
+              style={{ backgroundColor: '#050505', flex: 1 }}
+              scalesPageToFit={false}
+              showsVerticalScrollIndicator={true}
+              javaScriptEnabled={true}
+              startInLoadingState={true}
+              renderLoading={() => (
                 <View style={styles.center}>
-                    {loading ? <ActivityIndicator size="large" color="#2DDA93" /> : <Text style={{color: '#666'}}>Loading Book...</Text>}
+                  <ActivityIndicator size="large" color="#2DDA93" />
                 </View>
-            )}
+              )}
+              onError={(syntheticEvent) => {
+                const { nativeEvent } = syntheticEvent;
+                console.error('WebView error:', nativeEvent);
+              }}
+              onHttpError={(syntheticEvent) => {
+                const { nativeEvent } = syntheticEvent;
+                console.error('WebView HTTP error:', nativeEvent.statusCode);
+              }}
+            />
+          ) : (
+            <View style={styles.center}>
+              {loading ? (
+                <>
+                  <ActivityIndicator size="large" color="#2DDA93" />
+                  <Text style={{color: '#666', marginTop: 16}}>Loading Book...</Text>
+                </>
+              ) : (
+                <Text style={{color: '#666'}}>Unable to load content</Text>
+              )}
+            </View>
+          )}
         </View>
       </SafeAreaView>
     </Modal>
@@ -128,9 +161,29 @@ export const ReaderModal = ({ visible, book, onClose, localUri }: any) => {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#050505' },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 10, borderBottomWidth: 1, borderBottomColor: '#222', backgroundColor: '#050505', zIndex: 10 },
+  header: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    justifyContent: 'space-between', 
+    padding: 10, 
+    borderBottomWidth: 1, 
+    borderBottomColor: '#222', 
+    backgroundColor: '#050505', 
+    zIndex: 10 
+  },
   backBtn: { padding: 8 },
-  headerTitle: { color: '#FFF', fontSize: 14, fontWeight: 'bold', flex: 1, textAlign: 'center' },
+  headerTitle: { 
+    color: '#FFF', 
+    fontSize: 14, 
+    fontWeight: 'bold', 
+    flex: 1, 
+    textAlign: 'center' 
+  },
   webviewContainer: { flex: 1, backgroundColor: '#050505' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#050505' },
+  center: { 
+    flex: 1, 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    backgroundColor: '#050505' 
+  },
 });

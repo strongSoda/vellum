@@ -1,10 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Directory, File, Paths } from 'expo-file-system'; // Strict New API for Downloads
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Network from 'expo-network';
 import * as Notifications from 'expo-notifications';
 import React, { createContext, useContext, useEffect, useState } from 'react';
 
-// Types
 type BookStatus = 'toread' | 'reading' | 'completed';
 export type SavedBook = {
   id: number;
@@ -30,12 +29,39 @@ type LibraryContextType = {
 
 const LibraryContext = createContext<LibraryContextType>({} as any);
 
-// FIX: Wrap handler setup to prevent Expo Go crashes
 try {
   Notifications.setNotificationHandler({
     handleNotification: async () => ({ shouldShowAlert: true, shouldPlaySound: false, shouldSetBadge: false, shouldShowBanner: true, shouldShowList: true }),
   });
-} catch (e) { console.log("Notifications not supported in this environment"); }
+} catch (e) {}
+
+// Direct download function that writes to Documents without moving files
+const downloadFileDirectly = async (url: string, destPath: string): Promise<boolean> => {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return false;
+
+    const blob = await response.blob();
+    
+    const base64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const result = reader.result as string;
+        resolve(result.split(',')[1]);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+
+    await FileSystem.writeAsStringAsync(destPath, base64, {
+      encoding: FileSystem.EncodingType.Base64
+    });
+
+    return true;
+  } catch (error) {
+    return false;
+  }
+};
 
 export const LibraryProvider = ({ children }: { children: React.ReactNode }) => {
   const [savedBooks, setSavedBooks] = useState<SavedBook[]>([]);
@@ -56,7 +82,7 @@ export const LibraryProvider = ({ children }: { children: React.ReactNode }) => 
     try {
       const stored = await AsyncStorage.getItem('@vellum_lib_v10');
       if (stored) setSavedBooks(JSON.parse(stored));
-    } catch (e) { console.error(e); }
+    } catch (e) {}
   };
 
   const persist = async (newData: SavedBook[]) => {
@@ -69,47 +95,54 @@ export const LibraryProvider = ({ children }: { children: React.ReactNode }) => 
     setActiveDownload(book);
 
     try {
-      // 1. Setup Directory
-      const booksDir = new Directory(Paths.document, 'VellumLibrary');
-      if (!booksDir.exists) booksDir.create();
+      const booksDir = FileSystem.documentDirectory + 'VellumLibrary/';
+      
+      const dirInfo = await FileSystem.getInfoAsync(booksDir);
+      if (!dirInfo.exists) {
+        await FileSystem.makeDirectoryAsync(booksDir, { intermediates: true });
+      }
       
       const safeTitle = book.title.replace(/[^a-z0-9]/gi, '_').toLowerCase().substring(0, 30);
 
-      // 2. Download EPUB
       const epubUrl = book.formats['application/epub+zip'];
       let epubUri = undefined;
+      
       if (epubUrl) {
-          const epubFile = new File(booksDir, `${safeTitle}_${book.id}.epub`);
-          if (epubFile.exists) epubFile.delete(); // Clean up old file
-          const result = await File.downloadFileAsync(epubUrl, epubFile);
-          epubUri = result.uri;
+        const epubPath = booksDir + `${safeTitle}_${book.id}.epub`;
+        const epubInfo = await FileSystem.getInfoAsync(epubPath);
+        if (epubInfo.exists) await FileSystem.deleteAsync(epubPath);
+        
+        const success = await downloadFileDirectly(epubUrl, epubPath);
+        if (success) epubUri = epubPath;
       }
 
-      // 3. Download HTML (Crucial for Reader)
       const htmlUrl = book.formats['text/html'] || book.formats['text/html; charset=utf-8'];
       let htmlUri = undefined;
+      
       if (htmlUrl) {
-          const htmlFile = new File(booksDir, `${safeTitle}_${book.id}.html`);
-          if (htmlFile.exists) htmlFile.delete();
-          const result = await File.downloadFileAsync(htmlUrl, htmlFile);
-          htmlUri = result.uri;
+        const htmlPath = booksDir + `${safeTitle}_${book.id}.html`;
+        const htmlInfo = await FileSystem.getInfoAsync(htmlPath);
+        if (htmlInfo.exists) await FileSystem.deleteAsync(htmlPath);
+        
+        const success = await downloadFileDirectly(htmlUrl, htmlPath);
+        if (success) htmlUri = htmlPath;
       }
 
-      // 4. Save to Library
+      if (!epubUri && !htmlUri) {
+        throw new Error('No files downloaded');
+      }
+
       await saveBook(book, 'reading', epubUri, htmlUri);
 
-      // FIX: Safe Notification Trigger
       try {
         await Notifications.scheduleNotificationAsync({
           content: { title: "Book Ready", body: `${book.title} is ready to read.` },
           trigger: null,
         });
-      } catch (error) {
-        console.log("Notification failed (Expected in Expo Go)");
-      }
+      } catch {}
 
-    } catch (e) {
-      console.error("Download failed", e);
+    } catch (e: any) {
+      console.error('Download failed:', e);
     } finally {
       setActiveDownload(null);
     }
@@ -120,22 +153,35 @@ export const LibraryProvider = ({ children }: { children: React.ReactNode }) => 
     let newBooks = [...savedBooks];
     
     if (existingIndex >= 0) {
-        newBooks[existingIndex] = {
-            ...newBooks[existingIndex],
-            status,
-            localUri: localUri || newBooks[existingIndex].localUri,
-            readerUri: readerUri || newBooks[existingIndex].readerUri,
-        };
+      newBooks[existingIndex] = {
+        ...newBooks[existingIndex],
+        status,
+        localUri: localUri || newBooks[existingIndex].localUri,
+        readerUri: readerUri || newBooks[existingIndex].readerUri,
+      };
     } else {
-        newBooks.push({
-            id: book.id, book, status, notes: '', dateAdded: Date.now(),
-            localUri, readerUri
-        });
+      newBooks.push({
+        id: book.id, book, status, notes: '', dateAdded: Date.now(),
+        localUri, readerUri
+      });
     }
     await persist(newBooks);
   };
 
   const removeBook = async (id: number) => {
+    const bookToRemove = savedBooks.find(b => b.id === id);
+    if (bookToRemove) {
+      try {
+        if (bookToRemove.localUri) {
+          const fileInfo = await FileSystem.getInfoAsync(bookToRemove.localUri);
+          if (fileInfo.exists) await FileSystem.deleteAsync(bookToRemove.localUri);
+        }
+        if (bookToRemove.readerUri) {
+          const fileInfo = await FileSystem.getInfoAsync(bookToRemove.readerUri);
+          if (fileInfo.exists) await FileSystem.deleteAsync(bookToRemove.readerUri);
+        }
+      } catch (e) {}
+    }
     await persist(savedBooks.filter(b => b.id !== id));
   };
 
