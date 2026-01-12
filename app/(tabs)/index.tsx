@@ -1,3 +1,4 @@
+import { EpubReaderModal } from '@/components/EpubReader';
 import { UpdateBanner } from '@/components/UpdateBanner';
 import { Ionicons } from '@expo/vector-icons';
 import { FlashList } from '@shopify/flash-list';
@@ -25,8 +26,26 @@ export default function HomeScreen() {
   const [readerUri, setReaderUri] = useState<string | null>(null);
   const [readerBook, setReaderBook] = useState<any>(null);
 
+  const [epubVisible, setEpubVisible] = useState(false);
+  const [epubUri, setEpubUri] = useState<string | null>(null);
+  const [activeReaderData, setActiveReaderData] = useState<{book: any, uri: string} | null>(null);
+
   const [search, setSearch] = useState('');
   const [activeSort, setActiveSort] = useState<'popular' | 'alphabetical' | 'new'>('popular');
+
+  const handleOpenEpub = (uri: string) => {
+    // 1. Capture the data immediately
+    setActiveReaderData({ book: selectedBook, uri });
+    
+    // 2. Close the Details Modal first
+    setSelectedBook(null);
+
+    // 3. CRITICAL: Wait for DetailsModal to finish its closing animation 
+    // before asking UIKit to present the next modal.
+    setTimeout(() => {
+      setEpubVisible(true);
+    }, 600); // 600ms is the safe window for iOS modal transitions
+  };
 
   useEffect(() => {
     let result = [...STATIC_BOOKS];
@@ -150,7 +169,8 @@ export default function HomeScreen() {
         book={selectedBook} 
         visible={!!selectedBook} 
         onClose={() => setSelectedBook(null)} 
-        onRead={handleOpenReader} // Pass callback
+        onRead={handleOpenReader} 
+        onReadEpub={handleOpenEpub}
       />
 
       <ReaderModal 
@@ -158,6 +178,18 @@ export default function HomeScreen() {
         book={readerBook} 
         localUri={readerUri} 
         onClose={() => setReaderVisible(false)} 
+      />
+
+    <EpubReaderModal
+        visible={epubVisible} 
+        // Use the persistent reader data instead of selectedBook
+        book={activeReaderData?.book} 
+        epubUri={activeReaderData?.uri} 
+        onClose={() => {
+          setEpubVisible(false);
+          // Wait for reader to slide down before wiping data
+          setTimeout(() => setActiveReaderData(null), 500);
+        }} 
       />
 
       <FloatingDownloadBar onPress={() => activeDownload && setSelectedBook(activeDownload)} />

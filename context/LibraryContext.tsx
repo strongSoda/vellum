@@ -136,6 +136,9 @@ export const LibraryProvider = ({ children }: { children: React.ReactNode }) => 
 
       await saveBook(book, 'reading', epubUri, htmlUri);
 
+      console.log('book, reading, epubUri, htmlUri', book, 'reading', epubUri, htmlUri);
+      
+
       setTimeout(() => triggerAppRating(), 1500);
 
       try {

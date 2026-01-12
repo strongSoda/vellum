@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library';
 import * as Sharing from 'expo-sharing';
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Dimensions, Easing, Image, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLibrary } from '../context/LibraryContext';
@@ -35,7 +35,7 @@ const ShineButton = ({ onPress, text, disabled, loading, isReadMode, style }: an
   );
 };
 
-export const DetailsModal = ({ book, visible, onClose, onRead }: { book: any; visible: boolean; onClose: () => void, onRead: (uri: string) => void }) => {
+export const DetailsModal = ({ book, visible, onClose, onRead, onReadEpub }: { book: any; visible: boolean; onClose: () => void, onRead: (uri: string) => void, onReadEpub: (uri: string) => void }) => {
   const insets = useSafeAreaInsets();
   const [permissionResponse, requestPermission] = MediaLibrary.usePermissions();
   const { savedBooks, updateStatus, updateNotes, removeBook, saveBook, startDownload, activeDownload } = useLibrary();
@@ -75,6 +75,20 @@ export const DetailsModal = ({ book, visible, onClose, onRead }: { book: any; vi
           else Alert.alert("Error", "Sharing not available.");
       }
   };
+
+  const handleReadChoice = () => {
+  // Use localUri for EPUB files and readerUri for HTML files
+  if (libraryEntry?.localUri) {
+    onClose();
+    // Small delay ensures the Details modal closes smoothly before the Reader opens
+    setTimeout(() => onReadEpub(libraryEntry.localUri!), 300);
+  } else if (libraryEntry?.readerUri) {
+    onClose();
+    setTimeout(() => onRead(libraryEntry.readerUri!), 300);
+  } else {
+    Alert.alert("Unavailable", "Book files not found. Please try downloading again.");
+  }
+};
 
   const handleDownloadAction = () => startDownload(book);
 
@@ -142,16 +156,22 @@ export const DetailsModal = ({ book, visible, onClose, onRead }: { book: any; vi
 
             {isDownloaded ? (
                 <View style={styles.actionRow}>
-                    <TouchableOpacity style={[styles.mainBtn, styles.readBtn, {flex: 1, marginRight: 8}]} onPress={handleReadInternal}>
-                        <Text style={styles.btnText}>READ NOW</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[styles.mainBtn, styles.secondaryActionBtn, {flex: 1}]} onPress={handleReadExternal}>
-                        <Text style={[styles.btnText, {color: '#FFF'}]}>OPEN EPUB</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.iconBtn} onPress={() => removeBook(book.id)}>
-                        <Ionicons name="bookmark" size={24} color={THEME.accent} />
-                    </TouchableOpacity>
-                </View>
+    <TouchableOpacity 
+      style={[styles.mainBtn, styles.readBtn, { flex: 1, marginRight: 8 }]} 
+      onPress={handleReadChoice} // <--- USE IT HERE
+    >
+      <Text style={styles.btnText}>READ BOOK</Text>
+    </TouchableOpacity>
+    
+    {/* Keep the Share button as is */}
+    <TouchableOpacity style={[styles.mainBtn, styles.secondaryActionBtn, { flex: 1 }]} onPress={handleReadExternal}>
+      <Text style={[styles.btnText, { color: '#FFF' }]}>EXPORT EPUB</Text>
+    </TouchableOpacity>
+    
+    <TouchableOpacity style={styles.iconBtn} onPress={() => removeBook(book.id)}>
+      <Ionicons name="bookmark" size={24} color={THEME.accent} />
+    </TouchableOpacity>
+  </View>
             ) : (
                 <View style={styles.actionRow}>
                     <View style={{flex: 1}}>
