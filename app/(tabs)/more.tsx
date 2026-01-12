@@ -1,7 +1,7 @@
 import { DEVELOPER_PROFILE, PROJECTS } from '@/constants/Portfolio';
+import { openAppStoreRating } from '@/utils/Ratings';
 import { Ionicons } from '@expo/vector-icons';
 import * as WebBrowser from 'expo-web-browser';
-import React from 'react';
 import { Image, Linking, Platform, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -49,6 +49,23 @@ export default function MoreScreen() {
                         <Text style={styles.linkedinText}>Connect on LinkedIn</Text>
                     </TouchableOpacity>
                 </View>
+
+                <Text style={styles.sectionTitle}>SUPPORT THE PROJECT</Text>
+            
+            <TouchableOpacity 
+                style={[styles.projectCard, { borderColor: THEME.accent, marginBottom: 15 }]} 
+                onPress={openAppStoreRating}
+                activeOpacity={0.7}
+            >
+                <View style={[styles.iconBox, { backgroundColor: 'rgba(45, 218, 147, 0.2)' }]}>
+                    <Ionicons name="star" size={24} color={THEME.accent} />
+                </View>
+                <View style={{flex: 1}}>
+                    <Text style={styles.projectTitle}>Rate Vellum</Text>
+                    <Text style={styles.projectDesc}>Love the app? Leave a review on the App Store.</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color="#333" />
+            </TouchableOpacity>
 
                 <Text style={styles.sectionTitle}>MORE PROJECTS</Text>
 
