@@ -1,18 +1,29 @@
 import { Reader } from '@epubjs-react-native/core';
 import React from 'react';
 
-// This component only updates if the epubUri changes
-export const MemoizedReader = React.memo(({ src, fileSystem, onSelected, defaultTheme }: any) => {
+export const MemoizedReader = React.memo(({ 
+  src, 
+  fileSystem, 
+  onLocationChange, 
+  onSelected,
+  onLocationsReady,
+  defaultTheme 
+}: any) => {
   return (
     <Reader
       src={src}
       fileSystem={fileSystem}
-      enableSelection={true}
+      onLocationChange={onLocationChange}
       onSelected={onSelected}
+      onLocationsReady={onLocationsReady}
       defaultTheme={defaultTheme}
+      enableSelection={true}
+      allowPopups={true} // Enables internal links/anchors
+      allowScriptedContent={true}
     />
   );
-}, (prevProps, nextProps) => {
-  // Only re-render if the source file itself changes (switching books)
-  return prevProps.src === nextProps.src;
+}, (prev, next) => {
+  // ONLY re-render if the source file changes.
+  // This is the ONLY way to prevent the "Reset to Page 1" bug.
+  return prev.src === next.src;
 });

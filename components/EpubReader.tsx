@@ -1,203 +1,216 @@
+import { ReaderProvider, useReader } from '@epubjs-react-native/core';
+import { Ionicons } from '@expo/vector-icons';
+import Slider from '@react-native-community/slider';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Dimensions, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
 import { useLibrary } from '@/context/LibraryContext';
 import { useLegacyFileSystem } from '@/hooks/useLegacyFileSystem';
 import { downloadDictionary, getLocalDefinition } from '@/utils/Dictionary';
-import { ReaderProvider, useReader } from '@epubjs-react-native/core';
-import { Ionicons } from '@expo/vector-icons';
-import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { MemoizedReader } from './MemoReader';
 import { ReaderPopup } from './ReaderPopup';
 
-// IMPORT DICTIONARY
-// Note: You need to create this file in assets/ or download one
-// import dictionaryData from '../assets/dictionary.json'; 
+const { width } = Dimensions.get('window');
 
-const ReaderControls = () => {
-  const { 
-    changeFontSize, 
-    addBookmark, 
-    getCurrentLocation 
-  } = useReader();
+/**
+ * ReaderEngine remains the logic hub.
+ * We pass bookId explicitly as a prop to isolate it.
+ */
+const ReaderEngine = ({ epubUri, fs, initialLocation, handleSelection, settings, bookId, setProgress }: any) => {
+  const { updateLocation } = useLibrary();
+  const { goToLocation, changeFontFamily, currentLocation } = useReader();
+  const hasJumped = useRef(false);
 
-  const handleBookmark = () => {
-    const location = getCurrentLocation();
-    if (location) {
-        addBookmark(location.start.cfi);
-        Alert.alert("Success", "Page bookmarked");
+  useEffect(() => {
+    if (settings.font) changeFontFamily(settings.font);
+  }, [settings.font, changeFontFamily]);
+
+  const handleLocationsReady = useCallback(() => {
+    if (initialLocation && !hasJumped.current) {
+      goToLocation(initialLocation);
+      hasJumped.current = true;
     }
-  };
+  }, [initialLocation, goToLocation]);
+
+  useEffect(() => {
+    if (currentLocation?.start?.cfi && bookId) {
+      updateLocation(bookId, currentLocation.start.cfi);
+      setProgress({
+        percent: currentLocation.start.percentage || 0,
+        cfi: currentLocation.start.cfi
+      });
+    }
+  }, [currentLocation, bookId]);
 
   return (
-    <View style={styles.toolbar}>
-      <TouchableOpacity onPress={() => changeFontSize('115%')} style={styles.toolBtn}>
-        <Ionicons name="add" size={22} color="#FFF" />
-      </TouchableOpacity>
-      
-      <TouchableOpacity onPress={() => changeFontSize('85%')} style={styles.toolBtn}>
-        <Ionicons name="remove" size={22} color="#FFF" />
-      </TouchableOpacity>
-
-      <TouchableOpacity onPress={handleBookmark} style={styles.toolBtn}>
-        <Ionicons name="bookmark-outline" size={22} color="#2DDA93" />
-      </TouchableOpacity>
-    </View>
+    <MemoizedReader
+      src={epubUri}
+      fileSystem={() => fs}
+      onSelected={handleSelection}
+      onLocationsReady={handleLocationsReady}
+      defaultTheme={{
+        'body': { 
+          'background': '#050505 !important', 
+          'color': '#CCCCCC !important', 
+          'font-family': `${settings.font} !important` 
+        }
+      }}
+    />
   );
 };
 
 export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
   const [isReady, setIsReady] = useState(false);
-  const fs = useLegacyFileSystem();
+  const [progress, setProgress] = useState({ percent: 0, cfi: '' });
   const [popupData, setPopupData] = useState<any>(null);
-  const { updateNotes, savedBooks } = useLibrary();
+  const [settings, setSettings] = useState({ font: 'Georgia, serif' });
+  
+  const fs = useLegacyFileSystem();
+  const { savedBooks, updateNotes } = useLibrary();
 
+  // 1. ALL HOOKS AT THE TOP
   useEffect(() => {
     if (visible && epubUri) {
-      const timer = setTimeout(() => setIsReady(true), 400);
+      const timer = setTimeout(() => setIsReady(true), 600);
       return () => clearTimeout(timer);
     } else {
       setIsReady(false);
     }
   }, [visible, epubUri]);
 
-  if (!visible || !book || !epubUri) return null;
-
-  const formattedUri = epubUri.startsWith('file://') ? epubUri : `file://${epubUri}`;
-
-  const handleWordLookup = async (text: string) => {
-  const cleanWord = text.trim().toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "");
-  const result = await getLocalDefinition(cleanWord);
-
-  console.log('result', result);
-  
-
-  if (result === 'NOT_DOWNLOADED') {
-    Alert.alert(
-      "Offline Dictionary",
-      "Would you like to download the offline dictionary (8MB) for instant word lookups?",
-      [
-        { text: "No", style: "cancel" },
-        { 
-          text: "Download", 
-          onPress: () => {
-            Alert.alert("Downloading", "The dictionary is being saved. You can try lookup again in a moment.");
-            downloadDictionary((p) => console.log(`Progress: ${p}`));
-          }
-        }
-      ]
-    );
-  } else if (result === 'NOT_FOUND' || result === 'ERROR') {
-    Alert.alert(cleanWord.toUpperCase(), "Definition not found in local dictionary.", [
-      { text: "Search Online", onPress: () => Linking.openURL(`https://www.google.com/search?q=define+${cleanWord}`) },
-      { text: "OK" }
-    ]);
-  } else {
-    Alert.alert(cleanWord.toUpperCase(), result);
-  }
-};
-
-const handleSelection = React.useCallback(async (text: string, cfi: string) => {
+  const handleSelection = useCallback(async (text: string, cfi: string) => {
     const cleanText = text.trim();
+    if (!cleanText) return;
     const words = cleanText.split(/\s+/);
-
     if (words.length > 1) {
-      // It's a snippet
       setPopupData({ type: 'snippet', content: cleanText, cfi });
     } else {
-      // It's a single word
       const word = cleanText.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "");
       const definition = await getLocalDefinition(word);
-
-      if (definition === 'NOT_DOWNLOADED') {
-        setPopupData({ type: 'prompt_download', word, content: 'Dictionary not downloaded.' });
-      } else if (definition === 'NOT_FOUND') {
-        setPopupData({ type: 'definition', word, content: 'No local definition found. Try online search.' });
-      } else {
-        setPopupData({ type: 'definition', word, content: definition });
-      }
+      setPopupData({ 
+        type: definition === 'NOT_DOWNLOADED' ? 'prompt_download' : 'definition', 
+        word, 
+        content: definition === 'NOT_DOWNLOADED' ? 'Dictionary needed' : (definition || 'Not found') 
+      });
     }
   }, []);
 
-  const saveSnippet = (text: string) => {
+  // 2. Wrap book-dependent logic in useMemo with safety checks
+  const savedCfi = useMemo(() => {
+    if (!book?.id) return undefined;
+    const entry = savedBooks.find(b => b.id === book.id);
+    return entry?.lastLocation;
+  }, [book?.id, savedBooks]);
+
+  const handleSaveSnippet = (text: string) => {
+    if (!book?.id) return;
     const existing = savedBooks.find(b => b.id === book.id);
-    const newNote = existing?.notes 
-      ? `${existing.notes}\n\nSnippet: "${text}"` 
-      : `Snippet: "${text}"`;
-    
+    const newNote = existing?.notes ? `${existing.notes}\n\nSnippet: "${text}"` : `Snippet: "${text}"`;
     updateNotes(book.id, newNote);
-    Alert.alert("Saved", "Snippet added to your book notes.");
     setPopupData(null);
+    Alert.alert("Saved", "Snippet added to your book notes.");
   };
 
+  // 3. FINAL GUARD (React allows this if no hooks follow it)
+  if (!visible || !book || !epubUri) return null;
+
   return (
-  <Modal visible={visible} animationType="slide" presentationStyle="fullScreen">
-    <ReaderProvider key={`reader-context-${book.id}`}>
-      <SafeAreaView style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={onClose} style={styles.backBtn}>
-            <Ionicons name="chevron-down" size={28} color="#FFF" />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle} numberOfLines={1}>{book.title}</Text>
-          <View style={{ width: 40 }} />
-        </View>
+    <Modal visible={visible} animationType="slide" presentationStyle="fullScreen">
+      <ReaderProvider key="stable-epub-context">
+        <SafeAreaView style={styles.container}>
+          <View style={styles.header}>
+            <TouchableOpacity onPress={onClose}><Ionicons name="close" size={28} color="#FFF" /></TouchableOpacity>
+            <Text style={styles.headerTitle} numberOfLines={1}>{book.title}</Text>
+            <Text style={styles.progressText}>{Math.round(progress.percent * 100)}%</Text>
+          </View>
 
-        <View style={styles.readerContainer}>
-          {isReady ? (
-            <MemoizedReader
-              src={formattedUri}
-              fileSystem={() => fs}
-              onSelected={handleSelection}
-              defaultTheme={{
-                'body': { 'background': '#050505', 'color': '#CCC', 'font-family': 'Georgia, serif' }
-              }}
-            />
-          ) : (
-            <View style={styles.center}><ActivityIndicator color="#2DDA93" size="large" /></View>
+          <View style={styles.readerContainer}>
+            {isReady ? (
+              <ReaderEngine 
+                epubUri={epubUri}
+                fs={fs}
+                initialLocation={savedCfi}
+                handleSelection={handleSelection}
+                settings={settings}
+                bookId={book.id}
+                setProgress={setProgress}
+              />
+            ) : (
+              <View style={styles.center}><ActivityIndicator color="#2DDA93" size="large" /></View>
+            )}
+          </View>
+
+          {isReady && (
+            <View style={styles.footer}>
+              <View style={styles.themeRow}>
+                <TouchableOpacity onPress={() => setSettings({font: 'Georgia, serif'})} style={styles.themeBtn}>
+                  <Text style={[styles.themeBtnText, settings.font.includes('Georgia') && {color: '#2DDA93'}]}>SERIF</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setSettings({font: 'system-ui'})} style={styles.themeBtn}>
+                  <Text style={[styles.toolText, settings.font.includes('system') && {color: '#2DDA93'}]}>SANS</Text>
+                </TouchableOpacity>
+                <View style={styles.divider} />
+                <InternalFontSizers />
+              </View>
+              <InternalScrubber progress={progress} />
+            </View>
           )}
-        </View>
 
-        {/* This bar stays pinned to the bottom */}
-        {isReady && <ReaderControls />} 
-
-        <ReaderPopup 
-            data={popupData}
-            onClose={() => setPopupData(null)}
-            onSave={saveSnippet}
-            onDownload={async () => {
+          <ReaderPopup 
+            data={popupData} 
+            onClose={() => setPopupData(null)} 
+            onSave={handleSaveSnippet} 
+            onDownload={() => {
+              downloadDictionary();
               setPopupData(null);
-              Alert.alert("Downloading", "Please wait a moment...");
-              await downloadDictionary((p) => console.log(`Progress: ${p}`));
-            }}
+            }} 
           />
-      </SafeAreaView>
-    </ReaderProvider>
-  </Modal>
-);
+        </SafeAreaView>
+      </ReaderProvider>
+    </Modal>
+  );
+};
+
+// Sub-components to keep useReader hooks isolated
+const InternalFontSizers = () => {
+  const { changeFontSize } = useReader();
+  return (
+    <View style={{flexDirection: 'row', gap: 20}}>
+      <TouchableOpacity onPress={() => changeFontSize('115%')}><Ionicons name="add" size={22} color="#FFF" /></TouchableOpacity>
+      <TouchableOpacity onPress={() => changeFontSize('85%')}><Ionicons name="remove" size={22} color="#FFF" /></TouchableOpacity>
+    </View>
+  );
+};
+
+const InternalScrubber = ({ progress }: any) => {
+  const { goToLocation } = useReader();
+  return (
+    <Slider
+      style={styles.slider}
+      minimumValue={0}
+      maximumValue={1}
+      value={progress.percent}
+      minimumTrackTintColor="#2DDA93"
+      maximumTrackTintColor="#333"
+      thumbTintColor="#2DDA93"
+      onSlidingComplete={(val) => goToLocation(val)} // Slider percentage jump
+    />
+  );
 };
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#050505' },
-  header: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    padding: 10, 
-    borderBottomWidth: 1, 
-    borderBottomColor: '#222', 
-    backgroundColor: '#050505' 
-  },
-  headerTitle: { color: '#FFF', flex: 1, textAlign: 'center', fontWeight: 'bold', fontSize: 14 },
-  closeBtn: { padding: 5 },
-  readerContainer: { flex: 1, backgroundColor: '#050505' },
+  header: { flexDirection: 'row', alignItems: 'center', padding: 15, borderBottomWidth: 1, borderBottomColor: '#222' },
+  headerTitle: { color: '#FFF', flex: 1, textAlign: 'center', fontWeight: 'bold', fontSize: 13, marginHorizontal: 10 },
+  progressText: { color: '#2DDA93', fontSize: 11, fontWeight: 'bold' },
+  readerContainer: { flex: 1 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  // Toolbar Styles
-  toolbar: { 
-    flexDirection: 'row', 
-    backgroundColor: '#111', 
-    paddingVertical: 15, 
-    justifyContent: 'space-around',
-    borderTopWidth: 1,
-    borderTopColor: '#222'
-  },
-  toolBtn: { alignItems: 'center', paddingHorizontal: 20 },
-  toolText: { color: '#FFF', fontWeight: 'bold', fontSize: 12 }
+  footer: { backgroundColor: '#111', borderTopWidth: 1, borderTopColor: '#222', paddingBottom: 20 },
+  themeRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', paddingVertical: 15, gap: 15 },
+  themeBtn: { paddingHorizontal: 12 },
+  themeBtnText: { color: '#666', fontSize: 11, fontWeight: 'bold' },
+  toolText: { color: '#666', fontSize: 11, fontWeight: 'bold' },
+  divider: { width: 1, height: 20, backgroundColor: '#333' },
+  slider: { width: width - 40, alignSelf: 'center', height: 40 }
 });

@@ -15,6 +15,7 @@ export type SavedBook = {
   dateAdded: number;
   localUri?: string;
   readerUri?: string;
+  lastLocation?: string;
 };
 
 type LibraryContextType = {
@@ -27,6 +28,7 @@ type LibraryContextType = {
   updateNotes: (id: number, notes: string) => Promise<void>;
   checkBookStatus: (id: number) => SavedBook | undefined;
   startDownload: (book: any) => Promise<void>;
+  updateLocation: (id: number, cfi: string) => Promise<void>;
 };
 
 const LibraryContext = createContext<LibraryContextType>({} as any);
@@ -202,10 +204,15 @@ export const LibraryProvider = ({ children }: { children: React.ReactNode }) => 
     await persist(updated);
   };
 
+  const updateLocation = async (id: number, cfi: string) => {
+  const updated = savedBooks.map(b => b.id === id ? { ...b, lastLocation: cfi } : b);
+  await persist(updated);
+};
+
   const checkBookStatus = (id: number) => savedBooks.find(b => b.id === id);
 
   return (
-    <LibraryContext.Provider value={{ savedBooks, activeDownload, saveBook, removeBook, updateStatus, updateNotes, isOffline, checkBookStatus, startDownload }}>
+    <LibraryContext.Provider value={{ savedBooks, activeDownload, saveBook, removeBook, updateStatus, updateNotes, isOffline, checkBookStatus, startDownload, updateLocation }}>
       {children}
     </LibraryContext.Provider>
   );
