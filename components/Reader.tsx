@@ -1,6 +1,7 @@
+import { triggerAppRating } from '@/utils/Ratings';
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system/legacy';
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, Modal, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
@@ -102,6 +103,14 @@ export const ReaderModal = ({ visible, book, onClose, localUri }: any) => {
     }
   };
 
+  const handleClose = () => {
+    onClose();
+    // Trigger rating after the modal starts to slide away
+    setTimeout(() => {
+      triggerAppRating();
+    }, 1000);
+  };
+
   if (!visible || !book) return null;
 
   return (
@@ -110,7 +119,7 @@ export const ReaderModal = ({ visible, book, onClose, localUri }: any) => {
         <StatusBar barStyle="light-content" />
         
         <View style={styles.header}>
-          <TouchableOpacity onPress={onClose} style={styles.backBtn}>
+          <TouchableOpacity onPress={handleClose} style={styles.backBtn}>
             <Ionicons name="chevron-down" size={24} color="#FFF" />
           </TouchableOpacity>
           <Text style={styles.headerTitle} numberOfLines={1}>{book.title}</Text>

@@ -1,8 +1,10 @@
+import { triggerAppRating } from '@/utils/Ratings';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Network from 'expo-network';
 import * as Notifications from 'expo-notifications';
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { Platform } from 'react-native';
 
 type BookStatus = 'toread' | 'reading' | 'completed';
 export type SavedBook = {
@@ -35,33 +37,31 @@ try {
   });
 } catch (e) {}
 
-// Direct download function that writes to Documents without moving files
 const downloadFileDirectly = async (url: string, destPath: string): Promise<boolean> => {
   try {
-    const response = await fetch(url);
-    if (!response.ok) return false;
-
-    const blob = await response.blob();
-    
-    const base64 = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const result = reader.result as string;
-        resolve(result.split(',')[1]);
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-
-    await FileSystem.writeAsStringAsync(destPath, base64, {
-      encoding: FileSystem.EncodingType.Base64
-    });
-
-    return true;
-  } catch (error) {
+    if (Platform.OS === 'android') {
+      // Android: downloadAsync to cache directory
+      const result = await FileSystem.downloadAsync(url, destPath);
+      return result.status === 200;
+    } else {
+      // iOS: KEEP EXACT WORKING CODE
+      const response = await fetch(url);
+      if (!response.ok) return false;
+      const blob = await response.blob();
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      await FileSystem.writeAsStringAsync(destPath, base64, { encoding: FileSystem.EncodingType.Base64 });
+      return true;
+    }
+  } catch {
     return false;
   }
 };
+
 
 export const LibraryProvider = ({ children }: { children: React.ReactNode }) => {
   const [savedBooks, setSavedBooks] = useState<SavedBook[]>([]);
@@ -95,7 +95,9 @@ export const LibraryProvider = ({ children }: { children: React.ReactNode }) => 
     setActiveDownload(book);
 
     try {
-      const booksDir = FileSystem.documentDirectory + 'VellumLibrary/';
+      const booksDir = Platform.OS === 'android'
+  ? FileSystem.cacheDirectory + 'VellumLibrary/'
+  : FileSystem.documentDirectory + 'VellumLibrary/';
       
       const dirInfo = await FileSystem.getInfoAsync(booksDir);
       if (!dirInfo.exists) {
@@ -133,6 +135,8 @@ export const LibraryProvider = ({ children }: { children: React.ReactNode }) => 
       }
 
       await saveBook(book, 'reading', epubUri, htmlUri);
+
+      setTimeout(() => triggerAppRating(), 1500);
 
       try {
         await Notifications.scheduleNotificationAsync({

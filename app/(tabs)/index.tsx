@@ -1,6 +1,7 @@
+import { UpdateBanner } from '@/components/UpdateBanner';
 import { Ionicons } from '@expo/vector-icons';
 import { FlashList } from '@shopify/flash-list';
-import React, { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Platform, RefreshControl, StatusBar, Text, TextInput, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BookCard } from '../../components/BookCard';
@@ -91,6 +92,7 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#050505', paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0 }}>
       <StatusBar barStyle="light-content" />
+      <UpdateBanner />
       
       <View style={{ paddingHorizontal: 16, paddingVertical: 12 }}>
         <View style={{flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom: 12}}>
