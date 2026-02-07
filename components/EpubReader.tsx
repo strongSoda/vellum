@@ -11,6 +11,8 @@ import React, {
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
+  Linking,
   Modal,
   StyleSheet,
   Text,
@@ -28,22 +30,37 @@ import { ReaderPopup } from "./ReaderPopup";
 
 const LARGE_SCREEN_THRESHOLD = 768;
 
-/**
- * ReaderEngine remains the logic hub.
- * We pass bookId explicitly as a prop to isolate it.
- */
+// ─── Types ───────────────────────────────────────────────────────────────────
+type TocItem = {
+  id: string;
+  href: string;
+  label: string;
+  subitems?: TocItem[];
+};
+type PageInfo = { page: number; total: number };
+
+// ─── ReaderEngine ────────────────────────────────────────────────────────────
+// Lives inside ReaderProvider — bridges useReader() hooks with parent state.
 const ReaderEngine = ({
   epubUri,
   fs,
   initialLocation,
   handleSelection,
+  handleExternalLink,
   settings,
   bookId,
   setProgress,
+  setSectionLabel,
+  setPageInfo,
+  onBookFinished,
+  setTocData,
+  toggleUI,
 }: any) => {
   const { updateLocation } = useLibrary();
-  const { goToLocation, changeFontFamily, currentLocation } = useReader();
+  const { goToLocation, changeFontFamily, currentLocation, atEnd } =
+    useReader();
   const hasJumped = useRef(false);
+  const hasMarkedComplete = useRef(false);
 
   useEffect(() => {
     if (settings.font) changeFontFamily(settings.font);
@@ -56,6 +73,7 @@ const ReaderEngine = ({
     }
   }, [initialLocation, goToLocation]);
 
+  // Persist location + update progress
   useEffect(() => {
     if (currentLocation?.start?.cfi && bookId) {
       updateLocation(bookId, currentLocation.start.cfi);
@@ -63,8 +81,46 @@ const ReaderEngine = ({
         percent: currentLocation.start.percentage || 0,
         cfi: currentLocation.start.cfi,
       });
+      // Page info from epub.js displayed object
+      if (currentLocation.start.displayed) {
+        setPageInfo({
+          page: currentLocation.start.displayed.page,
+          total: currentLocation.start.displayed.total,
+        });
+      }
     }
   }, [currentLocation, bookId]);
+
+  // Auto-mark completed when reaching the end
+  useEffect(() => {
+    if (atEnd && bookId && !hasMarkedComplete.current) {
+      hasMarkedComplete.current = true;
+      onBookFinished();
+    }
+  }, [atEnd, bookId]);
+
+  // ── Stable callbacks for MemoReader (must never change to avoid re-renders) ──
+  const stableExternalLink = useCallback((url: string) => {
+    handleExternalLink(url);
+  }, []);
+
+  const stableOnFinish = useCallback(() => {}, []);
+  const stableOnBeginning = useCallback(() => {}, []);
+
+  // onNavigationLoaded — receive TOC + landmarks once
+  const stableOnNavLoaded = useCallback(({ toc }: { toc: TocItem[] }) => {
+    setTocData(toc);
+  }, []);
+
+  // onChangeSection — update chapter label in header
+  const stableOnChangeSection = useCallback((section: any) => {
+    if (section?.label) setSectionLabel(section.label);
+  }, []);
+
+  // onSingleTap — toggle immersive mode
+  const stableOnSingleTap = useCallback(() => {
+    toggleUI();
+  }, []);
 
   return (
     <MemoizedReader
@@ -72,6 +128,12 @@ const ReaderEngine = ({
       fileSystem={() => fs}
       onSelected={handleSelection}
       onLocationsReady={handleLocationsReady}
+      onPressExternalLink={stableExternalLink}
+      onFinish={stableOnFinish}
+      onBeginning={stableOnBeginning}
+      onNavigationLoaded={stableOnNavLoaded}
+      onChangeSection={stableOnChangeSection}
+      onSingleTap={stableOnSingleTap}
       defaultTheme={{
         body: {
           background: "#050505 !important",
@@ -83,7 +145,7 @@ const ReaderEngine = ({
   );
 };
 
-/** Page turner buttons for large screens (laptops/desktops without touch) */
+// ─── Page Turner Buttons (large screens) ─────────────────────────────────────
 const PageTurnerButtons = () => {
   const { goNext, goPrevious } = useReader();
   return (
@@ -106,30 +168,136 @@ const PageTurnerButtons = () => {
   );
 };
 
+// ─── TOC Panel ───────────────────────────────────────────────────────────────
+const TocPanel = ({
+  toc,
+  visible,
+  onClose,
+  onSelectChapter,
+}: {
+  toc: TocItem[];
+  visible: boolean;
+  onClose: () => void;
+  onSelectChapter: (href: string) => void;
+}) => {
+  if (!visible) return null;
+
+  // Flatten nested TOC items for display (with indent level)
+  const flatItems: { item: TocItem; level: number }[] = [];
+  const flatten = (items: TocItem[], level: number) => {
+    items.forEach((item) => {
+      flatItems.push({ item, level });
+      if (item.subitems?.length) flatten(item.subitems, level + 1);
+    });
+  };
+  flatten(toc, 0);
+
+  return (
+    <Modal visible={visible} transparent animationType="slide">
+      <View style={styles.tocOverlay}>
+        <View style={styles.tocContainer}>
+          <View style={styles.tocHeader}>
+            <Text style={styles.tocTitle}>Table of Contents</Text>
+            <TouchableOpacity onPress={onClose}>
+              <Ionicons name="close" size={24} color="#FFF" />
+            </TouchableOpacity>
+          </View>
+          <FlatList
+            data={flatItems}
+            keyExtractor={(_, i) => String(i)}
+            renderItem={({ item: { item, level } }) => (
+              <TouchableOpacity
+                style={[styles.tocItem, { paddingLeft: 16 + level * 16 }]}
+                onPress={() => {
+                  onSelectChapter(item.href);
+                  onClose();
+                }}
+              >
+                <Text style={styles.tocItemText} numberOfLines={2}>
+                  {item.label.trim()}
+                </Text>
+              </TouchableOpacity>
+            )}
+          />
+        </View>
+      </View>
+    </Modal>
+  );
+};
+
+// ─── TOC Button (inside ReaderProvider) ──────────────────────────────────────
+const TocGoTo = ({ onOpen }: { onOpen: () => void }) => {
+  return (
+    <TouchableOpacity onPress={onOpen} style={styles.themeBtn}>
+      <Ionicons name="list-outline" size={18} color="#888" />
+    </TouchableOpacity>
+  );
+};
+
+// ─── Internal TOC navigation helper (inside ReaderProvider) ──────────────────
+const TocNavigator = ({
+  targetHref,
+  onDone,
+}: {
+  targetHref: string | null;
+  onDone: () => void;
+}) => {
+  const { goToLocation } = useReader();
+  useEffect(() => {
+    if (targetHref) {
+      goToLocation(targetHref);
+      onDone();
+    }
+  }, [targetHref]);
+  return null;
+};
+
+// ═══ Main Modal ══════════════════════════════════════════════════════════════
 export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
   const [isReady, setIsReady] = useState(false);
   const [progress, setProgress] = useState({ percent: 0, cfi: "" });
+  const [pageInfo, setPageInfo] = useState<PageInfo | null>(null);
   const [popupData, setPopupData] = useState<any>(null);
   const [settings, setSettings] = useState({ font: "Georgia, serif" });
   const [dictDownloading, setDictDownloading] = useState(false);
   const [dictProgress, setDictProgress] = useState(0);
+  const [sectionLabel, setSectionLabel] = useState("");
+  const [showUI, setShowUI] = useState(true);
+  const [tocData, setTocData] = useState<TocItem[]>([]);
+  const [tocVisible, setTocVisible] = useState(false);
+  const [tocTarget, setTocTarget] = useState<string | null>(null);
   const pendingWordRef = useRef<string | null>(null);
 
   const fs = useLegacyFileSystem();
-  const { savedBooks, updateNotes } = useLibrary();
+  const { savedBooks, updateNotes, updateStatus } = useLibrary();
   const { width: screenWidth } = useWindowDimensions();
   const isLargeScreen = screenWidth >= LARGE_SCREEN_THRESHOLD;
 
-  // 1. ALL HOOKS AT THE TOP
+  // ── Boot / teardown ──
   useEffect(() => {
     if (visible && epubUri) {
       const timer = setTimeout(() => setIsReady(true), 600);
       return () => clearTimeout(timer);
     } else {
       setIsReady(false);
+      setSectionLabel("");
+      setShowUI(true);
+      setPageInfo(null);
+      setTocData([]);
     }
   }, [visible, epubUri]);
 
+  // Auto-set status to "reading" when opening a "toread" book
+  useEffect(() => {
+    if (visible && book?.id) {
+      const entry = savedBooks.find((b: any) => b.id === book.id);
+      if (entry && entry.status === "toread") {
+        updateStatus(book.id, "reading");
+      }
+    }
+  }, [visible, book?.id]);
+
+  // ── Text selection handler ──
   const handleSelection = useCallback(async (text: string, cfi: string) => {
     const cleanText = text.trim();
     if (!cleanText) return;
@@ -151,16 +319,46 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
     }
   }, []);
 
-  // 2. Wrap book-dependent logic in useMemo with safety checks
+  // ── External links ──
+  const handleExternalLink = useCallback((url: string) => {
+    if (!url) return;
+    Alert.alert("Open External Link", "This will open in your browser.", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Open", onPress: () => Linking.openURL(url) },
+    ]);
+  }, []);
+
+  // ── Auto-complete ──
+  const handleBookFinished = useCallback(() => {
+    if (!book?.id) return;
+    const entry = savedBooks.find((b: any) => b.id === book.id);
+    if (entry && entry.status !== "completed") {
+      updateStatus(book.id, "completed");
+      setTimeout(() => {
+        Alert.alert(
+          "📖 Book Completed!",
+          `You've finished "${book.title}". It's been marked as completed in your library.`,
+          [{ text: "Nice!", style: "default" }],
+        );
+      }, 800);
+    }
+  }, [book?.id, book?.title, savedBooks]);
+
+  // ── Toggle immersive mode ──
+  const toggleUI = useCallback(() => {
+    setShowUI((prev) => !prev);
+  }, []);
+
+  // ── Saved location lookup ──
   const savedCfi = useMemo(() => {
     if (!book?.id) return undefined;
-    const entry = savedBooks.find((b) => b.id === book.id);
-    return entry?.lastLocation;
+    return savedBooks.find((b: any) => b.id === book.id)?.lastLocation;
   }, [book?.id, savedBooks]);
 
+  // ── Snippet saving ──
   const handleSaveSnippet = (text: string) => {
     if (!book?.id) return;
-    const existing = savedBooks.find((b) => b.id === book.id);
+    const existing = savedBooks.find((b: any) => b.id === book.id);
     const newNote = existing?.notes
       ? `${existing.notes}\n\nSnippet: "${text}"`
       : `Snippet: "${text}"`;
@@ -169,29 +367,22 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
     Alert.alert("Saved", "Snippet added to your book notes.");
   };
 
+  // ── Dictionary download ──
   const handleDownloadDictionary = useCallback(async (word?: string) => {
     const lookupWord = word || pendingWordRef.current;
     pendingWordRef.current = lookupWord || null;
     setDictDownloading(true);
     setDictProgress(0);
 
-    // Update popup to show downloading state
     setPopupData((prev: any) =>
       prev
-        ? {
-            ...prev,
-            type: "downloading",
-            content: "Downloading dictionary...",
-          }
+        ? { ...prev, type: "downloading", content: "Downloading dictionary..." }
         : null,
     );
 
     try {
-      await downloadDictionary((p: number) => {
-        setDictProgress(p);
-      });
+      await downloadDictionary((p: number) => setDictProgress(p));
 
-      // Dictionary downloaded - look up the pending word
       if (lookupWord) {
         const definition = await getLocalDefinition(lookupWord);
         setPopupData({
@@ -212,7 +403,7 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
           "Dictionary has been downloaded successfully.",
         );
       }
-    } catch (e) {
+    } catch {
       Alert.alert(
         "Download Failed",
         "Could not download dictionary. Please check your connection and try again.",
@@ -225,7 +416,12 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
     }
   }, []);
 
-  // 3. FINAL GUARD (React allows this if no hooks follow it)
+  // ── TOC chapter select ──
+  const handleSelectChapter = useCallback((href: string) => {
+    setTocTarget(href);
+  }, []);
+
+  // ── Guard ──
   if (!visible || !book || !epubUri) return null;
 
   return (
@@ -236,18 +432,29 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
     >
       <ReaderProvider key="stable-epub-context">
         <SafeAreaView style={styles.container}>
-          <View style={styles.header}>
-            <TouchableOpacity onPress={onClose}>
-              <Ionicons name="close" size={28} color="#FFF" />
-            </TouchableOpacity>
-            <Text style={styles.headerTitle} numberOfLines={1}>
-              {book.title}
-            </Text>
-            <Text style={styles.progressText}>
-              {Math.round(progress.percent * 100)}%
-            </Text>
-          </View>
+          {/* ─ Header ─ */}
+          {showUI && (
+            <View style={styles.header}>
+              <TouchableOpacity onPress={onClose}>
+                <Ionicons name="close" size={28} color="#FFF" />
+              </TouchableOpacity>
+              <View style={styles.headerCenter}>
+                <Text style={styles.headerTitle} numberOfLines={1}>
+                  {book.title}
+                </Text>
+                {sectionLabel ? (
+                  <Text style={styles.chapterLabel} numberOfLines={1}>
+                    {sectionLabel}
+                  </Text>
+                ) : null}
+              </View>
+              <Text style={styles.progressText}>
+                {Math.round(progress.percent * 100)}%
+              </Text>
+            </View>
+          )}
 
+          {/* ─ Reader ─ */}
           <View style={styles.readerContainer}>
             {isReady ? (
               <>
@@ -256,11 +463,32 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
                   fs={fs}
                   initialLocation={savedCfi}
                   handleSelection={handleSelection}
+                  handleExternalLink={handleExternalLink}
                   settings={settings}
                   bookId={book.id}
                   setProgress={setProgress}
+                  setPageInfo={setPageInfo}
+                  setSectionLabel={setSectionLabel}
+                  onBookFinished={handleBookFinished}
+                  setTocData={setTocData}
+                  toggleUI={toggleUI}
+                />
+                {/* Invisible component to navigate when TOC item is tapped */}
+                <TocNavigator
+                  targetHref={tocTarget}
+                  onDone={() => setTocTarget(null)}
                 />
                 {isLargeScreen && <PageTurnerButtons />}
+                {/* Floating button to exit immersive mode */}
+                {!showUI && (
+                  <TouchableOpacity
+                    onPress={() => setShowUI(true)}
+                    style={styles.immersiveExitBtn}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="contract-outline" size={16} color="#999" />
+                  </TouchableOpacity>
+                )}
               </>
             ) : (
               <View style={styles.center}>
@@ -269,8 +497,15 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
             )}
           </View>
 
-          {isReady && (
+          {/* ─ Footer ─ */}
+          {isReady && showUI && (
             <View style={styles.footer}>
+              {/* Page info */}
+              {pageInfo && (
+                <Text style={styles.pageInfoText}>
+                  Page {pageInfo.page} of {pageInfo.total}
+                </Text>
+              )}
               <View style={styles.themeRow}>
                 <TouchableOpacity
                   onPress={() => setSettings({ font: "Georgia, serif" })}
@@ -300,20 +535,37 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
                 </TouchableOpacity>
                 <View style={styles.divider} />
                 <InternalFontSizers />
+                <View style={styles.divider} />
+                {tocData.length > 0 && (
+                  <TocGoTo onOpen={() => setTocVisible(true)} />
+                )}
+                <View style={styles.divider} />
+                <TouchableOpacity
+                  onPress={() => setShowUI(false)}
+                  style={styles.themeBtn}
+                >
+                  <Ionicons name="expand-outline" size={18} color="#888" />
+                </TouchableOpacity>
               </View>
               <InternalScrubber screenWidth={screenWidth} progress={progress} />
             </View>
           )}
 
+          {/* ─ Popups / Overlays ─ */}
           <ReaderPopup
             data={popupData}
             onClose={() => setPopupData(null)}
             onSave={handleSaveSnippet}
             downloading={dictDownloading}
             downloadProgress={dictProgress}
-            onDownload={() => {
-              handleDownloadDictionary(popupData?.word);
-            }}
+            onDownload={() => handleDownloadDictionary(popupData?.word)}
+          />
+
+          <TocPanel
+            toc={tocData}
+            visible={tocVisible}
+            onClose={() => setTocVisible(false)}
+            onSelectChapter={handleSelectChapter}
           />
         </SafeAreaView>
       </ReaderProvider>
@@ -321,7 +573,7 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
   );
 };
 
-// Sub-components to keep useReader hooks isolated
+// ─── Sub-components (inside ReaderProvider) ──────────────────────────────────
 const InternalFontSizers = () => {
   const { changeFontSize } = useReader();
   return (
@@ -347,13 +599,15 @@ const InternalScrubber = ({ progress, screenWidth }: any) => {
       minimumTrackTintColor="#2DDA93"
       maximumTrackTintColor="#333"
       thumbTintColor="#2DDA93"
-      onSlidingComplete={(val) => goToLocation(val)} // Slider percentage jump
+      onSlidingComplete={(val) => goToLocation(val)}
     />
   );
 };
 
+// ─── Styles ──────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#050505" },
+  // Header
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -361,22 +615,35 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#222",
   },
+  headerCenter: { flex: 1, marginHorizontal: 10 },
   headerTitle: {
     color: "#FFF",
-    flex: 1,
     textAlign: "center",
     fontWeight: "bold",
     fontSize: 13,
-    marginHorizontal: 10,
+  },
+  chapterLabel: {
+    color: "#888",
+    textAlign: "center",
+    fontSize: 11,
+    marginTop: 2,
   },
   progressText: { color: "#2DDA93", fontSize: 11, fontWeight: "bold" },
+  // Reader
   readerContainer: { flex: 1 },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
+  // Footer
   footer: {
     backgroundColor: "#111",
     borderTopWidth: 1,
     borderTopColor: "#222",
     paddingBottom: 20,
+  },
+  pageInfoText: {
+    color: "#555",
+    fontSize: 10,
+    textAlign: "center",
+    paddingTop: 8,
   },
   themeRow: {
     flexDirection: "row",
@@ -390,7 +657,7 @@ const styles = StyleSheet.create({
   toolText: { color: "#666", fontSize: 11, fontWeight: "bold" },
   divider: { width: 1, height: 20, backgroundColor: "#333" },
   slider: { alignSelf: "center", height: 40 },
-  // Page turner buttons for large screens
+  // Page turners
   pageTurnLeft: {
     position: "absolute",
     left: 0,
@@ -411,4 +678,46 @@ const styles = StyleSheet.create({
     alignItems: "center",
     zIndex: 10,
   },
+  // Immersive mode exit
+  immersiveExitBtn: {
+    position: "absolute",
+    bottom: 16,
+    alignSelf: "center",
+    backgroundColor: "rgba(30,30,30,0.85)",
+    borderRadius: 20,
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    zIndex: 10,
+    borderWidth: 1,
+    borderColor: "#333",
+  },
+  // TOC panel
+  tocOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.7)",
+    justifyContent: "flex-end",
+  },
+  tocContainer: {
+    backgroundColor: "#111",
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    maxHeight: "70%",
+    paddingBottom: 30,
+  },
+  tocHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#222",
+  },
+  tocTitle: { color: "#FFF", fontSize: 16, fontWeight: "bold" },
+  tocItem: {
+    paddingVertical: 14,
+    paddingRight: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#222",
+  },
+  tocItemText: { color: "#CCC", fontSize: 14 },
 });
