@@ -145,6 +145,11 @@ export const DetailsModal = ({ book, visible, onClose, onRead, onReadEpub }: any
                     )}
                 </View>
 
+                <TouchableOpacity style={styles.secondaryBtn} onPress={() => {/* existing cover save logic */}}>
+                    <Ionicons name="image-outline" size={20} color={THEME.accent} style={{marginRight: 8}} />
+                    <Text style={styles.secondaryBtnText}>Save Cover Art</Text>
+                </TouchableOpacity>
+
                 {libraryEntry && (
                     <View style={styles.libraryPanel}>
                         <Text style={styles.sectionHeader}>Library Progress</Text>
@@ -174,10 +179,7 @@ export const DetailsModal = ({ book, visible, onClose, onRead, onReadEpub }: any
                     ))}
                 </View>
 
-                <TouchableOpacity style={styles.secondaryBtn} onPress={() => {/* existing cover save logic */}}>
-                    <Ionicons name="image-outline" size={20} color={THEME.accent} style={{marginRight: 8}} />
-                    <Text style={styles.secondaryBtnText}>Save Cover Art</Text>
-                </TouchableOpacity>
+                
             </ScrollView>
         </View>
       </View>

@@ -162,7 +162,7 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
             onClose={() => setPopupData(null)} 
             onSave={handleSaveSnippet} 
             onDownload={() => {
-              downloadDictionary();
+              downloadDictionary(() => {});
               setPopupData(null);
             }} 
           />

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Vellum",
     "slug": "Vellum",
-    "version": "4.0.0",
+    "version": "4.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "splash": {
