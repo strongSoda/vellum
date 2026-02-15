@@ -2,6 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import React from "react";
 import {
   ActivityIndicator,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -23,9 +24,12 @@ export const ReaderPopup = ({
   const progressPercent = Math.round((downloadProgress || 0) * 100);
 
   return (
-    <View style={styles.overlay}>
+    <View style={styles.overlay} pointerEvents="box-none">
+      {/* Tap-outside-to-dismiss backdrop */}
+      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+
+      {/* Sheet now drops from the TOP so it sits above OS selection handles */}
       <View style={styles.sheet}>
-        <View style={styles.handle} />
         <View style={styles.header}>
           <Text style={styles.title}>
             {isDownloading
@@ -34,7 +38,7 @@ export const ReaderPopup = ({
                 ? "DICTIONARY"
                 : "SAVE SNIPPET"}
           </Text>
-          <TouchableOpacity onPress={onClose}>
+          <TouchableOpacity onPress={onClose} hitSlop={12}>
             <Ionicons name="close-circle" size={24} color="#444" />
           </TouchableOpacity>
         </View>
@@ -101,6 +105,8 @@ export const ReaderPopup = ({
             ) : null}
           </View>
         )}
+
+        <View style={styles.handle} />
       </View>
     </View>
   );
@@ -111,15 +117,16 @@ const styles = StyleSheet.create({
     position: "absolute",
     inset: 0,
     backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "flex-end",
+    justifyContent: "flex-end", // ← top-aligned instead of flex-end
     zIndex: 9999,
     elevation: 10,
   },
   sheet: {
     backgroundColor: "#161616",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    borderBottomLeftRadius: 20,
+    borderBottomRightRadius: 20,
     padding: 20,
+    paddingTop: 12,
     maxHeight: "50%",
   },
   handle: {
@@ -128,7 +135,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#333",
     borderRadius: 2,
     alignSelf: "center",
-    marginBottom: 15,
+    marginTop: 12,
   },
   header: {
     flexDirection: "row",

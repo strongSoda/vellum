@@ -30,6 +30,10 @@ import { ReaderPopup } from "./ReaderPopup";
 
 const LARGE_SCREEN_THRESHOLD = 768;
 
+// Minimum time (ms) between page-turn and allowing a new selection popup.
+// Prevents swipe gestures from accidentally triggering word lookups.
+const SELECTION_DEBOUNCE_MS = 400;
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 type TocItem = {
   id: string;
@@ -55,6 +59,7 @@ const ReaderEngine = ({
   onBookFinished,
   setTocData,
   toggleUI,
+  onPageChanged,
 }: any) => {
   const { updateLocation } = useLibrary();
   const { goToLocation, changeFontFamily, currentLocation, atEnd } =
@@ -88,6 +93,8 @@ const ReaderEngine = ({
           total: currentLocation.start.displayed.total,
         });
       }
+      // Notify parent that the page changed (used for popup dismissal / debounce)
+      onPageChanged?.();
     }
   }, [currentLocation, bookId]);
 
@@ -103,6 +110,14 @@ const ReaderEngine = ({
   const stableExternalLink = useCallback((url: string) => {
     handleExternalLink(url);
   }, []);
+
+  // Stable selection handler — our popup handles dictionary/snippets.
+  const stableSelection = useCallback(
+    (text: string, cfi: string) => {
+      handleSelection(text, cfi);
+    },
+    [handleSelection],
+  );
 
   const stableOnFinish = useCallback(() => {}, []);
   const stableOnBeginning = useCallback(() => {}, []);
@@ -126,7 +141,7 @@ const ReaderEngine = ({
     <MemoizedReader
       src={epubUri}
       fileSystem={() => fs}
-      onSelected={handleSelection}
+      onSelected={stableSelection}
       onLocationsReady={handleLocationsReady}
       onPressExternalLink={stableExternalLink}
       onFinish={stableOnFinish}
@@ -145,24 +160,27 @@ const ReaderEngine = ({
   );
 };
 
-// ─── Page Turner Buttons (large screens) ─────────────────────────────────────
-const PageTurnerButtons = () => {
+// ─── Page Turner Buttons ─────────────────────────────────────────────────────
+// Now always rendered; size adapts to screen width.
+const PageTurnerButtons = ({ compact }: { compact?: boolean }) => {
   const { goNext, goPrevious } = useReader();
+  const btnWidth = compact ? 36 : 48;
+  const iconSize = compact ? 22 : 28;
   return (
     <>
       <TouchableOpacity
         onPress={goPrevious}
-        style={styles.pageTurnLeft}
+        style={[styles.pageTurnLeft, { width: btnWidth }]}
         activeOpacity={0.6}
       >
-        <Ionicons name="chevron-back" size={28} color="#888" />
+        <Ionicons name="chevron-back" size={iconSize} color="#888" />
       </TouchableOpacity>
       <TouchableOpacity
         onPress={goNext}
-        style={styles.pageTurnRight}
+        style={[styles.pageTurnRight, { width: btnWidth }]}
         activeOpacity={0.6}
       >
-        <Ionicons name="chevron-forward" size={28} color="#888" />
+        <Ionicons name="chevron-forward" size={iconSize} color="#888" />
       </TouchableOpacity>
     </>
   );
@@ -268,6 +286,10 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
   const [tocTarget, setTocTarget] = useState<string | null>(null);
   const pendingWordRef = useRef<string | null>(null);
 
+  // Debounce refs to suppress swipe-triggered selections
+  const lastPageChangeTs = useRef<number>(0);
+  const lastSelectionTs = useRef<number>(0);
+
   const fs = useLegacyFileSystem();
   const { savedBooks, updateNotes, updateStatus } = useLibrary();
   const { width: screenWidth } = useWindowDimensions();
@@ -297,15 +319,37 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
     }
   }, [visible, book?.id]);
 
-  // ── Text selection handler ──
+  // ── Page-change callback — dismiss popup & mark timestamp for debounce ──
+  const handlePageChanged = useCallback(() => {
+    lastPageChangeTs.current = Date.now();
+    // Dismiss any open popup when the page turns
+    setPopupData(null);
+  }, []);
+
+  // ── Text selection handler (with debounce to ignore swipe artefacts) ──
   const handleSelection = useCallback(async (text: string, cfi: string) => {
+    const now = Date.now();
+
+    // If a page turn just happened, ignore this selection — it's a swipe artefact
+    if (now - lastPageChangeTs.current < SELECTION_DEBOUNCE_MS) {
+      return;
+    }
+
+    // Also debounce rapid-fire duplicate selections
+    if (now - lastSelectionTs.current < 150) {
+      return;
+    }
+    lastSelectionTs.current = now;
+
     const cleanText = text.trim();
     if (!cleanText) return;
+
     const words = cleanText.split(/\s+/);
     if (words.length > 1) {
       setPopupData({ type: "snippet", content: cleanText, cfi });
     } else {
       const word = cleanText.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "");
+      if (!word) return; // pure punctuation — ignore
       const definition = await getLocalDefinition(word);
       setPopupData({
         type:
@@ -472,13 +516,15 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
                   onBookFinished={handleBookFinished}
                   setTocData={setTocData}
                   toggleUI={toggleUI}
+                  onPageChanged={handlePageChanged}
                 />
                 {/* Invisible component to navigate when TOC item is tapped */}
                 <TocNavigator
                   targetHref={tocTarget}
                   onDone={() => setTocTarget(null)}
                 />
-                {isLargeScreen && <PageTurnerButtons />}
+                {/* Always show page-turn buttons; compact on small screens */}
+                <PageTurnerButtons compact={!isLargeScreen} />
                 {/* Floating button to exit immersive mode */}
                 {!showUI && (
                   <TouchableOpacity
@@ -657,7 +703,7 @@ const styles = StyleSheet.create({
   toolText: { color: "#666", fontSize: 11, fontWeight: "bold" },
   divider: { width: 1, height: 20, backgroundColor: "#333" },
   slider: { alignSelf: "center", height: 40 },
-  // Page turners
+  // Page turners — always visible, narrower on small screens
   pageTurnLeft: {
     position: "absolute",
     left: 0,
