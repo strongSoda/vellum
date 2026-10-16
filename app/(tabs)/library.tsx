@@ -1,8 +1,14 @@
 import { EpubReaderModal } from "@/components/EpubReader";
 import { ReaderModal } from "@/components/Reader";
+import { Ionicons } from "@expo/vector-icons";
 import { FlashList } from "@shopify/flash-list";
-import React, { useState } from "react";
+import * as DocumentPicker from "expo-document-picker";
+import * as FileSystem from "expo-file-system/legacy";
+import { router, useLocalSearchParams } from "expo-router";
+import React, { useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
+  Alert,
   Platform,
   StatusBar,
   Text,
@@ -13,11 +19,21 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { BookCard } from "../../components/BookCard";
 import { DetailsModal } from "../../components/DetailsModal";
-import { useLibrary } from "../../context/LibraryContext";
+import { SavedBook, useLibrary } from "../../context/LibraryContext";
+
+const FILTERS = [
+  { key: "all", label: "ALL" },
+  { key: "toread", label: "TO READ" },
+  { key: "reading", label: "READING" },
+  { key: "completed", label: "DONE" },
+] as const;
 
 export default function LibraryScreen() {
-  const { savedBooks } = useLibrary();
-  const [filter, setFilter] = useState<"all" | "reading" | "completed">("all");
+  const { savedBooks, isLoaded, importBook } = useLibrary();
+  const { importUri } = useLocalSearchParams<{ importUri?: string }>();
+  const [filter, setFilter] = useState<(typeof FILTERS)[number]["key"]>("all");
+  const [importing, setImporting] = useState(false);
+  const handledImportUri = useRef<string | null>(null);
   const [selectedBook, setSelectedBook] = useState<any>(null);
   const { width } = useWindowDimensions();
   const numColumns = Math.max(2, Math.floor(width / 170));
@@ -54,6 +70,93 @@ export default function LibraryScreen() {
     setTimeout(() => setEpubVisible(true), 600);
   };
 
+  // ── Local EPUB import ──
+  const openImported = (entry: SavedBook) => {
+    if (!entry.localUri) return;
+    const open = () => {
+      setActiveReaderData({ book: entry.book, uri: entry.localUri! });
+      setEpubVisible(true);
+    };
+    // iOS can only present one modal at a time — let any open one dismiss first.
+    const needsWait = epubVisible || readerVisible || !!selectedBook;
+    setSelectedBook(null);
+    setEpubVisible(false);
+    setReaderVisible(false);
+    setTimeout(open, needsWait ? 600 : 0);
+  };
+
+  // A file opened with Vellum from outside the app (see app/+native-intent.tsx).
+  // Waits for the library to load so the import can't overwrite saved books.
+  useEffect(() => {
+    if (!importUri) {
+      handledImportUri.current = null;
+      return;
+    }
+    if (!isLoaded || handledImportUri.current === importUri) return;
+    handledImportUri.current = importUri;
+    router.setParams({ importUri: undefined });
+
+    setImporting(true);
+    importBook(importUri)
+      .then(openImported)
+      .catch((e) =>
+        Alert.alert(
+          "Couldn't Open Book",
+          e?.message || "This file could not be imported.",
+        ),
+      )
+      .finally(() => setImporting(false));
+  }, [importUri, isLoaded]);
+
+  const handlePickFiles = async () => {
+    const result = await DocumentPicker.getDocumentAsync({
+      // Some Android file managers label EPUBs as generic binaries; the
+      // importer validates the contents either way.
+      type:
+        Platform.OS === "ios"
+          ? ["application/epub+zip"]
+          : ["application/epub+zip", "application/octet-stream"],
+      multiple: true,
+      copyToCacheDirectory: true,
+    });
+    if (result.canceled || !result.assets?.length) return;
+
+    setImporting(true);
+    const imported: SavedBook[] = [];
+    const failed: string[] = [];
+    for (const asset of result.assets) {
+      try {
+        imported.push(await importBook(asset.uri, asset.name));
+      } catch {
+        failed.push(asset.name);
+      } finally {
+        // The picker's temporary copy is no longer needed.
+        const cacheDir = FileSystem.cacheDirectory;
+        if (cacheDir && asset.uri.startsWith(cacheDir)) {
+          FileSystem.deleteAsync(asset.uri, { idempotent: true }).catch(
+            () => {},
+          );
+        }
+      }
+    }
+    setImporting(false);
+
+    if (imported.length === 1 && failed.length === 0) {
+      openImported(imported[0]);
+    } else if (failed.length) {
+      Alert.alert(
+        imported.length ? "Some Files Skipped" : "Import Failed",
+        `${imported.length ? `Imported ${imported.length} book(s). ` : ""}These files aren't valid EPUBs:\n\n${failed.join("\n")}`,
+      );
+    } else {
+      setFilter("all");
+      Alert.alert(
+        "Imported",
+        `${imported.length} books added to your library.`,
+      );
+    }
+  };
+
   return (
     <SafeAreaView
       style={{
@@ -63,17 +166,51 @@ export default function LibraryScreen() {
       }}
     >
       <View style={{ padding: 16 }}>
-        <Text
+        <View
           style={{
-            fontSize: 28,
-            fontWeight: "900",
-            color: "#FFF",
-            letterSpacing: 2,
+            flexDirection: "row",
+            justifyContent: "space-between",
+            alignItems: "center",
             marginBottom: 16,
           }}
         >
-          MY LIBRARY
-        </Text>
+          <Text
+            style={{
+              fontSize: 28,
+              fontWeight: "900",
+              color: "#FFF",
+              letterSpacing: 2,
+            }}
+          >
+            MY LIBRARY
+          </Text>
+          <TouchableOpacity
+            onPress={handlePickFiles}
+            disabled={importing}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              backgroundColor: "#1A1A1A",
+              paddingHorizontal: 12,
+              paddingVertical: 8,
+              borderRadius: 20,
+              borderWidth: 1,
+              borderColor: "#333",
+            }}
+          >
+            <Ionicons name="add" size={16} color="#2DDA93" />
+            <Text
+              style={{
+                color: "#DDD",
+                fontSize: 11,
+                fontWeight: "bold",
+                marginLeft: 4,
+              }}
+            >
+              IMPORT EPUB
+            </Text>
+          </TouchableOpacity>
+        </View>
 
         {/* Status Filter Tabs */}
         <View
@@ -85,10 +222,10 @@ export default function LibraryScreen() {
             maxWidth: 500,
           }}
         >
-          {["all", "reading", "completed"].map((f) => (
+          {FILTERS.map(({ key: f, label }) => (
             <TouchableOpacity
               key={f}
-              onPress={() => setFilter(f as any)}
+              onPress={() => setFilter(f)}
               style={{
                 flex: 1,
                 paddingVertical: 10,
@@ -104,7 +241,7 @@ export default function LibraryScreen() {
                   fontSize: 12,
                 }}
               >
-                {f.toUpperCase()}
+                {label}
               </Text>
             </TouchableOpacity>
           ))}
@@ -125,6 +262,18 @@ export default function LibraryScreen() {
             <Text style={{ color: "#444", fontSize: 16 }}>
               No books found in this list.
             </Text>
+            {filter === "all" && (
+              <Text
+                style={{
+                  color: "#444",
+                  fontSize: 13,
+                  marginTop: 8,
+                  textAlign: "center",
+                }}
+              >
+                Tap Import EPUB to add books from your device.
+              </Text>
+            )}
           </View>
         }
       />
@@ -153,6 +302,26 @@ export default function LibraryScreen() {
           setTimeout(() => setActiveReaderData(null), 500);
         }}
       />
+
+      {importing && (
+        <View
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(0,0,0,0.7)",
+            justifyContent: "center",
+            alignItems: "center",
+          }}
+        >
+          <ActivityIndicator color="#2DDA93" size="large" />
+          <Text style={{ color: "#DDD", marginTop: 12, fontWeight: "bold" }}>
+            Importing book...
+          </Text>
+        </View>
+      )}
     </SafeAreaView>
   );
 }

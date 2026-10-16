@@ -1,9 +1,26 @@
+import {
+  buildImportedBook,
+  cleanupInboxCopy,
+  fileNameFromUri,
+  importKey,
+  isImportedBook,
+  parseEpub,
+  readExternalEpub,
+  rebaseImportPath,
+  writeImportedFiles,
+} from "@/utils/LocalBooks";
 import { triggerAppRating } from "@/utils/Ratings";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Network from "expo-network";
 import * as Notifications from "expo-notifications";
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { Platform } from "react-native";
 
 type BookStatus = "toread" | "reading" | "completed";
@@ -20,6 +37,7 @@ export type SavedBook = {
 
 type LibraryContextType = {
   savedBooks: SavedBook[];
+  isLoaded: boolean;
   activeDownload: any | null;
   downloadProgress: number;
   isOffline: boolean;
@@ -35,6 +53,7 @@ type LibraryContextType = {
   checkBookStatus: (id: number) => SavedBook | undefined;
   startDownload: (book: any) => Promise<void>;
   updateLocation: (id: number, cfi: string) => Promise<void>;
+  importBook: (sourceUri: string, fileName?: string) => Promise<SavedBook>;
 };
 
 const LibraryContext = createContext<LibraryContextType>({} as any);
@@ -121,6 +140,9 @@ export const LibraryProvider = ({
   children: React.ReactNode;
 }) => {
   const [savedBooks, setSavedBooks] = useState<SavedBook[]>([]);
+  const [isLoaded, setIsLoaded] = useState(false);
+  // Always-current copy for async flows (imports) that outlive a render.
+  const savedBooksRef = useRef<SavedBook[]>([]);
   const [isOffline, setIsOffline] = useState(false);
   const [activeDownload, setActiveDownload] = useState<any | null>(null);
   const [downloadProgress, setDownloadProgress] = useState(0);
@@ -138,11 +160,36 @@ export const LibraryProvider = ({
   const loadLibrary = async () => {
     try {
       const stored = await AsyncStorage.getItem("@vellum_lib_v10");
-      if (stored) setSavedBooks(JSON.parse(stored));
-    } catch (e) {}
+      if (stored) {
+        const books: SavedBook[] = JSON.parse(stored).map((b: SavedBook) =>
+          isImportedBook(b.book)
+            ? {
+                ...b,
+                localUri: rebaseImportPath(b.localUri),
+                book: {
+                  ...b.book,
+                  formats: b.book.formats["image/jpeg"]
+                    ? {
+                        "image/jpeg": rebaseImportPath(
+                          b.book.formats["image/jpeg"],
+                        ),
+                      }
+                    : {},
+                },
+              }
+            : b,
+        );
+        savedBooksRef.current = books;
+        setSavedBooks(books);
+      }
+    } catch (e) {
+    } finally {
+      setIsLoaded(true);
+    }
   };
 
   const persist = async (newData: SavedBook[]) => {
+    savedBooksRef.current = newData;
     setSavedBooks(newData);
     await AsyncStorage.setItem("@vellum_lib_v10", JSON.stringify(newData));
   };
@@ -280,6 +327,10 @@ export const LibraryProvider = ({
     const bookToRemove = savedBooks.find((b) => b.id === id);
     if (bookToRemove) {
       try {
+        const coverUri = bookToRemove.book?.formats?.["image/jpeg"];
+        if (isImportedBook(bookToRemove.book) && coverUri) {
+          await FileSystem.deleteAsync(coverUri, { idempotent: true });
+        }
         if (bookToRemove.localUri) {
           const fileInfo = await FileSystem.getInfoAsync(bookToRemove.localUri);
           if (fileInfo.exists)
@@ -316,10 +367,68 @@ export const LibraryProvider = ({
 
   const checkBookStatus = (id: number) => savedBooks.find((b) => b.id === id);
 
+  // ── Local EPUB import ──────────────────────────────────────────────────────
+  // Copies a user's EPUB into app storage and adds it to the library. Nothing
+  // is uploaded; metadata and cover are read from the file on-device.
+  const lastImportId = useRef(0);
+  const importBook = async (sourceUri: string, fileName?: string) => {
+    const name = fileName || fileNameFromUri(sourceUri);
+    try {
+      const base64 = await readExternalEpub(sourceUri);
+      const meta = await parseEpub(base64);
+
+      // Same book imported again → reopen the existing entry, keeping progress.
+      const key = importKey(meta, name);
+      const existing = savedBooksRef.current.find(
+        (b) => isImportedBook(b.book) && b.book.localKey === key,
+      );
+      if (existing?.localUri) {
+        const info = await FileSystem.getInfoAsync(existing.localUri);
+        if (info.exists) return existing;
+      }
+
+      // Negative ids can never collide with Project Gutenberg ids.
+      const id = Math.min(-Date.now(), lastImportId.current - 1);
+      lastImportId.current = id;
+
+      const { epubUri, coverUri } = await writeImportedFiles(id, base64, meta);
+      const book = buildImportedBook(id, meta, name, coverUri);
+
+      let entry: SavedBook;
+      let newBooks: SavedBook[];
+      if (existing) {
+        // Entry exists but its file went missing — restore the file in place.
+        entry = {
+          ...existing,
+          localUri: epubUri,
+          book: { ...book, id: existing.id },
+        };
+        newBooks = savedBooksRef.current.map((b) =>
+          b.id === existing.id ? entry : b,
+        );
+      } else {
+        entry = {
+          id,
+          book,
+          status: "toread",
+          notes: "",
+          dateAdded: Date.now(),
+          localUri: epubUri,
+        };
+        newBooks = [...savedBooksRef.current, entry];
+      }
+      await persist(newBooks);
+      return entry;
+    } finally {
+      await cleanupInboxCopy(sourceUri);
+    }
+  };
+
   return (
     <LibraryContext.Provider
       value={{
         savedBooks,
+        isLoaded,
         activeDownload,
         downloadProgress,
         saveBook,
@@ -330,6 +439,7 @@ export const LibraryProvider = ({
         checkBookStatus,
         startDownload,
         updateLocation,
+        importBook,
       }}
     >
       {children}

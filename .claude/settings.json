@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -iE '^\\(jszip|expo-document-picker|expo-sharing|epubjs\\)$')",
+      "Bash(grep -v \"^--$\")",
+      "Bash(npx expo *)",
+      "Bash(python3 -)",
+      "Bash(npx tsc *)",
+      "Bash(npx -y prettier@3 --write components/DetailsModal.tsx \"app/\\(tabs\\)/library.tsx\" context/LibraryContext.tsx utils/LocalBooks.ts \"app/+native-intent.tsx\")",
+      "Bash(python3 -c ' *)",
+      "Bash(curl -sL -o alice.epub \"https://www.gutenberg.org/ebooks/11.epub3.images\")",
+      "Bash(curl -sL -o pride.epub \"https://www.gutenberg.org/ebooks/1342.epub.noimages\")"
+    ]
+  }
+}

@@ -21,6 +21,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLibrary } from "../context/LibraryContext";
+import { isImportedBook } from "../utils/LocalBooks";
 
 const THEME = {
   background: "#050505",
@@ -160,6 +161,7 @@ export const DetailsModal = ({
 
   if (!book) return null;
 
+  const isLocal = isImportedBook(book);
   const coverUrl = book.formats["image/jpeg"];
   const authorName =
     book.authors[0]?.name.split(",").reverse().join(" ").trim() || "Unknown";
@@ -181,6 +183,24 @@ export const DetailsModal = ({
   };
 
   const handleManageBook = () => {
+    if (isLocal) {
+      Alert.alert(
+        "Manage Book",
+        "Removing deletes Vellum's copy, progress and notes. The original file on your device is not affected.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Remove from Library",
+            style: "destructive",
+            onPress: () => {
+              onClose();
+              removeBook(book.id);
+            },
+          },
+        ],
+      );
+      return;
+    }
     Alert.alert("Manage Book", "Choose an action for this book.", [
       { text: "Cancel", style: "cancel" },
       { text: "Redownload (Repair)", onPress: () => startDownload(book) },
@@ -202,11 +222,16 @@ export const DetailsModal = ({
     setDownloadingCover(true);
 
     try {
-      // 1. Download image to local cache
-      const filename = `cover_${book.id}_${Date.now()}.jpg`;
-      const localUri = `${FileSystem.cacheDirectory}${filename}`;
-
-      const downloadResult = await FileSystem.downloadAsync(coverUrl, localUri);
+      // 1. Download image to local cache (imported books already have it on disk)
+      let downloadResult: { uri: string; status: number };
+      if (coverUrl.startsWith("file://")) {
+        downloadResult = { uri: coverUrl, status: 200 };
+      } else {
+        const filename = `cover_${book.id}_${Date.now()}.jpg`;
+        const localUri = `${FileSystem.cacheDirectory}${filename}`;
+        downloadResult = await FileSystem.downloadAsync(coverUrl, localUri);
+      }
+      const localUri = downloadResult.uri;
 
       if (downloadResult.status !== 200) {
         throw new Error("Failed to download cover image");
@@ -295,11 +320,17 @@ export const DetailsModal = ({
                 { width: coverSize.width, height: coverSize.height },
               ]}
             >
-              <Image
-                source={{ uri: coverUrl }}
-                style={styles.cover}
-                resizeMode="cover"
-              />
+              {coverUrl ? (
+                <Image
+                  source={{ uri: coverUrl }}
+                  style={styles.cover}
+                  resizeMode="cover"
+                />
+              ) : (
+                <View style={[styles.cover, styles.coverPlaceholder]}>
+                  <Ionicons name="book-outline" size={56} color="#555" />
+                </View>
+              )}
             </View>
 
             <Text style={styles.title}>{book.title}</Text>
@@ -362,30 +393,32 @@ export const DetailsModal = ({
               )}
             </View>
 
-            <TouchableOpacity
-              style={styles.secondaryBtn}
-              onPress={handleSaveCover}
-              disabled={downloadingCover}
-              activeOpacity={0.7}
-            >
-              {downloadingCover ? (
-                <ActivityIndicator
-                  color={THEME.accent}
-                  size="small"
-                  style={{ marginRight: 8 }}
-                />
-              ) : (
-                <Ionicons
-                  name="image-outline"
-                  size={20}
-                  color={THEME.accent}
-                  style={{ marginRight: 8 }}
-                />
-              )}
-              <Text style={styles.secondaryBtnText}>
-                {downloadingCover ? "Saving..." : "Save Cover Art"}
-              </Text>
-            </TouchableOpacity>
+            {coverUrl && (
+              <TouchableOpacity
+                style={styles.secondaryBtn}
+                onPress={handleSaveCover}
+                disabled={downloadingCover}
+                activeOpacity={0.7}
+              >
+                {downloadingCover ? (
+                  <ActivityIndicator
+                    color={THEME.accent}
+                    size="small"
+                    style={{ marginRight: 8 }}
+                  />
+                ) : (
+                  <Ionicons
+                    name="image-outline"
+                    size={20}
+                    color={THEME.accent}
+                    style={{ marginRight: 8 }}
+                  />
+                )}
+                <Text style={styles.secondaryBtnText}>
+                  {downloadingCover ? "Saving..." : "Save Cover Art"}
+                </Text>
+              </TouchableOpacity>
+            )}
 
             {libraryEntry && (
               <View style={styles.libraryPanel}>
@@ -427,33 +460,69 @@ export const DetailsModal = ({
               </View>
             )}
 
-            <View style={styles.metaGrid}>
-              <View style={styles.metaItem}>
-                <Text style={styles.metaLabel}>DOWNLOADS</Text>
-                <Text style={styles.metaValue}>
-                  {book.download_count.toLocaleString()}
-                </Text>
+            {isLocal ? (
+              <View style={styles.metaGrid}>
+                <View style={styles.metaItem}>
+                  <Text style={styles.metaLabel}>SOURCE</Text>
+                  <Text style={styles.metaValue}>DEVICE</Text>
+                </View>
+                <View style={styles.metaItem}>
+                  <Text style={styles.metaLabel}>LANGUAGE</Text>
+                  <Text style={styles.metaValue}>
+                    {book.languages[0]?.toUpperCase() || "—"}
+                  </Text>
+                </View>
+                <View style={styles.metaItem}>
+                  <Text style={styles.metaLabel}>TYPE</Text>
+                  <Text style={styles.metaValue}>EPUB</Text>
+                </View>
+                <View style={styles.metaItem}>
+                  <Text style={styles.metaLabel}>ADDED</Text>
+                  <Text style={styles.metaValue}>
+                    {libraryEntry
+                      ? new Date(libraryEntry.dateAdded).toLocaleDateString()
+                      : "—"}
+                  </Text>
+                </View>
+                {book.publisher ? (
+                  <View style={[styles.metaItem, { width: "100%" }]}>
+                    <Text style={styles.metaLabel}>PUBLISHER</Text>
+                    <Text style={styles.metaValue}>{book.publisher}</Text>
+                  </View>
+                ) : null}
               </View>
-              <View style={styles.metaItem}>
-                <Text style={styles.metaLabel}>LANGUAGE</Text>
-                <Text style={styles.metaValue}>
-                  {book.languages[0]?.toUpperCase()}
-                </Text>
+            ) : (
+              <View style={styles.metaGrid}>
+                <View style={styles.metaItem}>
+                  <Text style={styles.metaLabel}>DOWNLOADS</Text>
+                  <Text style={styles.metaValue}>
+                    {book.download_count.toLocaleString()}
+                  </Text>
+                </View>
+                <View style={styles.metaItem}>
+                  <Text style={styles.metaLabel}>LANGUAGE</Text>
+                  <Text style={styles.metaValue}>
+                    {book.languages[0]?.toUpperCase()}
+                  </Text>
+                </View>
+                <View style={styles.metaItem}>
+                  <Text style={styles.metaLabel}>TYPE</Text>
+                  <Text style={styles.metaValue}>
+                    {book.media_type.toUpperCase()}
+                  </Text>
+                </View>
+                <View style={styles.metaItem}>
+                  <Text style={styles.metaLabel}>ID</Text>
+                  <Text style={styles.metaValue}>#{book.id}</Text>
+                </View>
               </View>
-              <View style={styles.metaItem}>
-                <Text style={styles.metaLabel}>TYPE</Text>
-                <Text style={styles.metaValue}>
-                  {book.media_type.toUpperCase()}
-                </Text>
-              </View>
-              <View style={styles.metaItem}>
-                <Text style={styles.metaLabel}>ID</Text>
-                <Text style={styles.metaValue}>#{book.id}</Text>
-              </View>
-            </View>
+            )}
 
             <Text style={styles.desc}>
-              {book.summaries?.[0] || "No summary available for this classic."}
+              {book.summaries?.[0] ||
+                (isLocal
+                  ? "This file doesn't include a description."
+                  : "No summary available for this classic.")}
             </Text>
 
             <View style={styles.tagRow}>
@@ -507,6 +576,11 @@ const styles = StyleSheet.create({
     shadowRadius: 20,
     elevation: 20,
     marginBottom: 30,
+  },
+  coverPlaceholder: {
+    backgroundColor: "#161616",
+    alignItems: "center",
+    justifyContent: "center",
   },
   cover: {
     width: "100%",
