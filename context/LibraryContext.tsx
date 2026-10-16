@@ -24,6 +24,12 @@ import React, {
 import { Platform } from "react-native";
 
 type BookStatus = "toread" | "reading" | "completed";
+export type Snippet = {
+  id: string;
+  text: string;
+  cfi?: string;
+  createdAt: number;
+};
 export type SavedBook = {
   id: number;
   book: any;
@@ -33,6 +39,7 @@ export type SavedBook = {
   localUri?: string;
   readerUri?: string;
   lastLocation?: string;
+  snippets?: Snippet[];
 };
 
 type LibraryContextType = {
@@ -54,6 +61,35 @@ type LibraryContextType = {
   startDownload: (book: any) => Promise<void>;
   updateLocation: (id: number, cfi: string) => Promise<void>;
   importBook: (sourceUri: string, fileName?: string) => Promise<SavedBook>;
+  addSnippet: (id: number, text: string, cfi?: string) => Promise<boolean>;
+  removeSnippet: (id: number, snippetId: string) => Promise<void>;
+};
+
+// Snippets used to be appended to a book's notes as `Snippet: "..."` blocks.
+// Move them into their own list and leave the rest of the notes untouched.
+// A block that doesn't match exactly stays in the notes, so nothing is lost.
+const SNIPPET_BLOCK = /^Snippet: "([\s\S]*)"$/;
+const migrateSnippets = (b: SavedBook): SavedBook => {
+  if (b.snippets) return b;
+  const snippets: Snippet[] = [];
+  const kept: string[] = [];
+  (b.notes || "").split("\n\n").forEach((chunk, i) => {
+    const match = chunk.trim().match(SNIPPET_BLOCK);
+    if (match && match[1].trim()) {
+      snippets.push({
+        id: `${b.id}-legacy-${i}`,
+        text: match[1].trim(),
+        createdAt: b.dateAdded + i,
+      });
+    } else {
+      kept.push(chunk);
+    }
+  });
+  return {
+    ...b,
+    notes: snippets.length ? kept.join("\n\n").trim() : b.notes,
+    snippets,
+  };
 };
 
 const LibraryContext = createContext<LibraryContextType>({} as any);
@@ -161,7 +197,9 @@ export const LibraryProvider = ({
     try {
       const stored = await AsyncStorage.getItem("@vellum_lib_v10");
       if (stored) {
-        const books: SavedBook[] = JSON.parse(stored).map((b: SavedBook) =>
+        const parsed: SavedBook[] = JSON.parse(stored);
+        const needsMigration = parsed.some((b) => !b.snippets);
+        const books: SavedBook[] = parsed.map(migrateSnippets).map((b) =>
           isImportedBook(b.book)
             ? {
                 ...b,
@@ -181,6 +219,9 @@ export const LibraryProvider = ({
         );
         savedBooksRef.current = books;
         setSavedBooks(books);
+        if (needsMigration) {
+          await AsyncStorage.setItem("@vellum_lib_v10", JSON.stringify(books));
+        }
       }
     } catch (e) {
     } finally {
@@ -365,6 +406,33 @@ export const LibraryProvider = ({
     await persist(updated);
   };
 
+  const addSnippet = async (id: number, text: string, cfi?: string) => {
+    const clean = text.trim();
+    if (!clean || !savedBooksRef.current.some((b) => b.id === id)) return false;
+    const snippet: Snippet = {
+      id: `${id}-${Date.now()}`,
+      text: clean,
+      cfi,
+      createdAt: Date.now(),
+    };
+    await persist(
+      savedBooksRef.current.map((b) =>
+        b.id === id ? { ...b, snippets: [...(b.snippets || []), snippet] } : b,
+      ),
+    );
+    return true;
+  };
+
+  const removeSnippet = async (id: number, snippetId: string) => {
+    await persist(
+      savedBooksRef.current.map((b) =>
+        b.id === id
+          ? { ...b, snippets: (b.snippets || []).filter((s) => s.id !== snippetId) }
+          : b,
+      ),
+    );
+  };
+
   const checkBookStatus = (id: number) => savedBooks.find((b) => b.id === id);
 
   // ── Local EPUB import ──────────────────────────────────────────────────────
@@ -440,6 +508,8 @@ export const LibraryProvider = ({
         startDownload,
         updateLocation,
         importBook,
+        addSnippet,
+        removeSnippet,
       }}
     >
       {children}

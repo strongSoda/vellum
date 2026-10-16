@@ -1,4 +1,5 @@
 import { EpubReaderModal } from "@/components/EpubReader";
+import { useAppTheme } from "@/context/ThemeContext";
 import { ReaderModal } from "@/components/Reader";
 import { Ionicons } from "@expo/vector-icons";
 import { FlashList } from "@shopify/flash-list";
@@ -30,6 +31,7 @@ const FILTERS = [
 
 export default function LibraryScreen() {
   const { savedBooks, isLoaded, importBook } = useLibrary();
+  const { colors, scheme } = useAppTheme();
   const { importUri } = useLocalSearchParams<{ importUri?: string }>();
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["key"]>("all");
   const [importing, setImporting] = useState(false);
@@ -161,7 +163,7 @@ export default function LibraryScreen() {
     <SafeAreaView
       style={{
         flex: 1,
-        backgroundColor: "#050505",
+        backgroundColor: colors.background,
         paddingTop: Platform.OS === "android" ? StatusBar.currentHeight : 0,
       }}
     >
@@ -178,7 +180,7 @@ export default function LibraryScreen() {
             style={{
               fontSize: 28,
               fontWeight: "900",
-              color: "#FFF",
+              color: colors.text,
               letterSpacing: 2,
             }}
           >
@@ -190,18 +192,18 @@ export default function LibraryScreen() {
             style={{
               flexDirection: "row",
               alignItems: "center",
-              backgroundColor: "#1A1A1A",
+              backgroundColor: colors.surfaceAlt,
               paddingHorizontal: 12,
               paddingVertical: 8,
               borderRadius: 20,
               borderWidth: 1,
-              borderColor: "#333",
+              borderColor: colors.borderStrong,
             }}
           >
-            <Ionicons name="add" size={16} color="#2DDA93" />
+            <Ionicons name="add" size={16} color={colors.accentText} />
             <Text
               style={{
-                color: "#DDD",
+                color: colors.textSecondary,
                 fontSize: 11,
                 fontWeight: "bold",
                 marginLeft: 4,
@@ -216,7 +218,7 @@ export default function LibraryScreen() {
         <View
           style={{
             flexDirection: "row",
-            backgroundColor: "#222",
+            backgroundColor: colors.border,
             borderRadius: 12,
             padding: 4,
             maxWidth: 500,
@@ -231,12 +233,17 @@ export default function LibraryScreen() {
                 paddingVertical: 10,
                 alignItems: "center",
                 borderRadius: 8,
-                backgroundColor: filter === f ? "#333" : "transparent",
+                backgroundColor:
+                  filter === f
+                    ? scheme === "dark"
+                      ? colors.borderStrong
+                      : colors.surface
+                    : "transparent",
               }}
             >
               <Text
                 style={{
-                  color: filter === f ? "#FFF" : "#888",
+                  color: filter === f ? colors.text : colors.textMuted,
                   fontWeight: "bold",
                   fontSize: 12,
                 }}
@@ -254,18 +261,17 @@ export default function LibraryScreen() {
         renderItem={({ item }) => (
           <BookCard item={item} onPress={() => setSelectedBook(item)} />
         )}
-        estimatedItemSize={280}
-        numColumns={numColumns}
+                numColumns={numColumns}
         contentContainerStyle={{ paddingHorizontal: 8 }}
         ListEmptyComponent={
           <View style={{ padding: 40, alignItems: "center" }}>
-            <Text style={{ color: "#444", fontSize: 16 }}>
+            <Text style={{ color: colors.textFaint, fontSize: 16 }}>
               No books found in this list.
             </Text>
             {filter === "all" && (
               <Text
                 style={{
-                  color: "#444",
+                  color: colors.textFaint,
                   fontSize: 13,
                   marginTop: 8,
                   textAlign: "center",
@@ -316,8 +322,8 @@ export default function LibraryScreen() {
             alignItems: "center",
           }}
         >
-          <ActivityIndicator color="#2DDA93" size="large" />
-          <Text style={{ color: "#DDD", marginTop: 12, fontWeight: "bold" }}>
+          <ActivityIndicator color={colors.accent} size="large" />
+          <Text style={{ color: "#FFF", marginTop: 12, fontWeight: "bold" }}>
             Importing book...
           </Text>
         </View>

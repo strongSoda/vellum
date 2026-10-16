@@ -20,15 +20,11 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { AppPalette } from "../constants/theme";
 import { useLibrary } from "../context/LibraryContext";
+import { useAppTheme, useThemedStyles } from "../context/ThemeContext";
 import { isImportedBook } from "../utils/LocalBooks";
 
-const THEME = {
-  background: "#050505",
-  accent: "#2DDA93",
-  text: "#FFF",
-  textMuted: "#888",
-};
 const MAX_CONTENT_WIDTH = 650;
 
 const ShineButton = ({
@@ -40,6 +36,7 @@ const ShineButton = ({
   style,
 }: any) => {
   const { width: windowWidth } = useWindowDimensions();
+  const styles = useThemedStyles(makeStyles);
   const shineAnim = useRef(new Animated.Value(-100)).current;
   const progressPct = Math.round((progress || 0) * 100);
 
@@ -129,6 +126,8 @@ export const DetailsModal = ({
 }: any) => {
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
+  const { colors } = useAppTheme();
+  const styles = useThemedStyles(makeStyles);
   const [permissionResponse, requestPermission] = MediaLibrary.usePermissions();
   const {
     savedBooks,
@@ -139,6 +138,7 @@ export const DetailsModal = ({
     startDownload,
     activeDownload,
     downloadProgress,
+    removeSnippet,
   } = useLibrary();
 
   const [downloadingCover, setDownloadingCover] = useState(false);
@@ -208,6 +208,17 @@ export const DetailsModal = ({
         text: "Delete from Device",
         style: "destructive",
         onPress: () => removeBook(book.id),
+      },
+    ]);
+  };
+
+  const confirmRemoveSnippet = (snippetId: string) => {
+    Alert.alert("Delete Snippet", "Remove this snippet from your collection?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: () => removeSnippet(book.id, snippetId),
       },
     ]);
   };
@@ -304,7 +315,7 @@ export const DetailsModal = ({
             onPress={onClose}
             style={[styles.closeBtn, { top: insets.top + 10 }]}
           >
-            <Ionicons name="close" size={24} color="#FFF" />
+            <Ionicons name="close" size={24} color={colors.text} />
           </TouchableOpacity>
 
           <ScrollView
@@ -328,7 +339,11 @@ export const DetailsModal = ({
                 />
               ) : (
                 <View style={[styles.cover, styles.coverPlaceholder]}>
-                  <Ionicons name="book-outline" size={56} color="#555" />
+                  <Ionicons
+                    name="book-outline"
+                    size={56}
+                    color={colors.textFaint}
+                  />
                 </View>
               )}
             </View>
@@ -343,7 +358,9 @@ export const DetailsModal = ({
                     style={[styles.mainBtn, styles.readBtn, { flex: 1.5 }]}
                     onPress={handleReadChoice}
                   >
-                    <Text style={styles.btnText}>READ BOOK</Text>
+                    <Text style={[styles.btnText, { color: colors.onInverse }]}>
+                      READ BOOK
+                    </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[
@@ -353,7 +370,7 @@ export const DetailsModal = ({
                     ]}
                     onPress={handleExport}
                   >
-                    <Text style={[styles.btnText, { color: "#FFF" }]}>
+                    <Text style={[styles.btnText, { color: colors.text }]}>
                       EXPORT
                     </Text>
                   </TouchableOpacity>
@@ -364,7 +381,7 @@ export const DetailsModal = ({
                     <Ionicons
                       name="ellipsis-vertical"
                       size={22}
-                      color={THEME.accent}
+                      color={colors.accentText}
                     />
                   </TouchableOpacity>
                 </>
@@ -386,7 +403,7 @@ export const DetailsModal = ({
                     <Ionicons
                       name={libraryEntry ? "bookmark" : "bookmark-outline"}
                       size={24}
-                      color={THEME.accent}
+                      color={colors.accentText}
                     />
                   </TouchableOpacity>
                 </>
@@ -402,7 +419,7 @@ export const DetailsModal = ({
               >
                 {downloadingCover ? (
                   <ActivityIndicator
-                    color={THEME.accent}
+                    color={colors.accentText}
                     size="small"
                     style={{ marginRight: 8 }}
                   />
@@ -410,7 +427,7 @@ export const DetailsModal = ({
                   <Ionicons
                     name="image-outline"
                     size={20}
-                    color={THEME.accent}
+                    color={colors.accentText}
                     style={{ marginRight: 8 }}
                   />
                 )}
@@ -431,7 +448,7 @@ export const DetailsModal = ({
                       style={[
                         styles.statusChip,
                         libraryEntry.status === s && {
-                          backgroundColor: THEME.accent,
+                          backgroundColor: colors.accent,
                         },
                       ]}
                     >
@@ -450,13 +467,36 @@ export const DetailsModal = ({
                   style={styles.notesInput}
                   multiline
                   placeholder="Personal notes..."
-                  placeholderTextColor="#444"
+                  placeholderTextColor={colors.textFaint}
                   value={notes}
                   onChangeText={(t) => {
                     setNotes(t);
                     updateNotes(book.id, t);
                   }}
                 />
+                {!!libraryEntry.snippets?.length && (
+                  <View style={styles.snippetsBlock}>
+                    <Text style={styles.sectionHeader}>
+                      Saved Snippets ({libraryEntry.snippets.length})
+                    </Text>
+                    {[...libraryEntry.snippets].reverse().map((snippet) => (
+                      <View key={snippet.id} style={styles.snippetRow}>
+                        <Text style={styles.snippetText}>“{snippet.text}”</Text>
+                        <TouchableOpacity
+                          onPress={() => confirmRemoveSnippet(snippet.id)}
+                          hitSlop={10}
+                          accessibilityLabel="Delete snippet"
+                        >
+                          <Ionicons
+                            name="trash-outline"
+                            size={16}
+                            color={colors.textMuted}
+                          />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+                )}
               </View>
             )}
 
@@ -543,184 +583,218 @@ export const DetailsModal = ({
   );
 };
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: THEME.background,
-    alignItems: "center",
-  },
-  responsiveWrapper: { width: "100%", maxWidth: MAX_CONTENT_WIDTH, flex: 1 },
-  ambientBg: { ...StyleSheet.absoluteFillObject, opacity: 0.6 },
-  overlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "#000",
-    opacity: 0.85,
-  },
-  closeBtn: {
-    position: "absolute",
-    right: 20,
-    zIndex: 50,
-    backgroundColor: "rgba(50,50,50,0.8)",
-    padding: 10,
-    borderRadius: 25,
-  },
-  scrollContent: {
-    paddingHorizontal: 24,
-    paddingBottom: 100,
-    alignItems: "center",
-  },
-  coverWrapper: {
-    shadowColor: THEME.accent,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.3,
-    shadowRadius: 20,
-    elevation: 20,
-    marginBottom: 30,
-  },
-  coverPlaceholder: {
-    backgroundColor: "#161616",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  cover: {
-    width: "100%",
-    height: "100%",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#222",
-  },
-  title: {
-    fontSize: 26,
-    fontWeight: "900",
-    color: "#FFF",
-    textAlign: "center",
-    marginBottom: 8,
-    letterSpacing: 0.5,
-  },
-  author: {
-    fontSize: 18,
-    color: "#AAA",
-    textAlign: "center",
-    marginBottom: 30,
-  },
-  actionRow: { flexDirection: "row", width: "100%", gap: 10, marginBottom: 24 },
-  mainBtn: {
-    height: 56,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  downloadBtn: { backgroundColor: THEME.accent },
-  readBtn: { backgroundColor: "#FFF" },
-  secondaryActionBtn: {
-    backgroundColor: "#1A1A1A",
-    borderWidth: 1,
-    borderColor: "#333",
-  },
-  disabledBtn: { backgroundColor: "#222" },
-  btnText: { fontWeight: "900", fontSize: 12, letterSpacing: 1, color: "#000" },
-  iconBtn: {
-    width: 56,
-    height: 56,
-    backgroundColor: "#111",
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "#222",
-  },
-  libraryPanel: {
-    width: "100%",
-    backgroundColor: "#0A0A0A",
-    padding: 20,
-    borderRadius: 16,
-    marginBottom: 30,
-    borderWidth: 1,
-    borderColor: "#1A1A1A",
-  },
-  sectionHeader: {
-    color: "#444",
-    fontSize: 10,
-    fontWeight: "900",
-    marginBottom: 15,
-    textTransform: "uppercase",
-    letterSpacing: 1,
-  },
-  statusRow: { flexDirection: "row", gap: 8, marginBottom: 20 },
-  statusChip: {
-    flex: 1,
-    paddingVertical: 10,
-    alignItems: "center",
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "#1A1A1A",
-    backgroundColor: "#000",
-  },
-  statusText: { color: "#444", fontSize: 10, fontWeight: "800" },
-  notesInput: {
-    backgroundColor: "#050505",
-    color: "#FFF",
-    borderRadius: 10,
-    padding: 15,
-    minHeight: 120,
-    textAlignVertical: "top",
-    borderWidth: 1,
-    borderColor: "#1A1A1A",
-    fontSize: 15,
-  },
-  metaGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    width: "100%",
-    marginBottom: 30,
-    backgroundColor: "#0A0A0A",
-    borderRadius: 16,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: "#1A1A1A",
-  },
-  metaItem: { width: "50%", marginBottom: 15, alignItems: "center" },
-  metaLabel: {
-    color: "#444",
-    fontSize: 10,
-    fontWeight: "900",
-    marginBottom: 4,
-  },
-  metaValue: { color: "#FFF", fontSize: 14, fontWeight: "700" },
-  desc: {
-    color: "#999",
-    lineHeight: 26,
-    fontSize: 16,
-    marginBottom: 40,
-    width: "100%",
-  },
-  tagRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "center",
-    gap: 8,
-    marginBottom: 40,
-  },
-  tag: {
-    backgroundColor: "#111",
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "#1A1A1A",
-  },
-  tagText: { color: "#555", fontSize: 11, fontWeight: "600" },
-  secondaryBtn: {
-    flexDirection: "row",
-    width: "100%",
-    padding: 16,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#222",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.02)",
-    marginBottom: 24,
-  },
-  secondaryBtnText: { color: THEME.accent, fontWeight: "700", fontSize: 14 },
-});
+const makeStyles = (c: AppPalette) =>
+  StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor: c.background,
+      alignItems: "center",
+    },
+    responsiveWrapper: { width: "100%", maxWidth: MAX_CONTENT_WIDTH, flex: 1 },
+    ambientBg: { ...StyleSheet.absoluteFillObject, opacity: 0.6 },
+    overlay: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor: c.background,
+      opacity: 0.85,
+    },
+    closeBtn: {
+      position: "absolute",
+      right: 20,
+      zIndex: 50,
+      backgroundColor: c.surfaceAlt,
+      borderWidth: 1,
+      borderColor: c.border,
+      padding: 10,
+      borderRadius: 25,
+    },
+    scrollContent: {
+      paddingHorizontal: 24,
+      paddingBottom: 100,
+      alignItems: "center",
+    },
+    coverWrapper: {
+      shadowColor: c.accent,
+      shadowOffset: { width: 0, height: 10 },
+      shadowOpacity: 0.3,
+      shadowRadius: 20,
+      elevation: 20,
+      marginBottom: 30,
+    },
+    coverPlaceholder: {
+      backgroundColor: c.surfaceAlt,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    cover: {
+      width: "100%",
+      height: "100%",
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    title: {
+      fontSize: 26,
+      fontWeight: "900",
+      color: c.text,
+      textAlign: "center",
+      marginBottom: 8,
+      letterSpacing: 0.5,
+    },
+    author: {
+      fontSize: 18,
+      color: c.textMuted,
+      textAlign: "center",
+      marginBottom: 30,
+    },
+    actionRow: {
+      flexDirection: "row",
+      width: "100%",
+      gap: 10,
+      marginBottom: 24,
+    },
+    mainBtn: {
+      height: 56,
+      borderRadius: 16,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    downloadBtn: { backgroundColor: c.accent },
+    readBtn: { backgroundColor: c.inverse },
+    secondaryActionBtn: {
+      backgroundColor: c.surfaceAlt,
+      borderWidth: 1,
+      borderColor: c.borderStrong,
+    },
+    disabledBtn: { backgroundColor: c.border },
+    btnText: {
+      fontWeight: "900",
+      fontSize: 12,
+      letterSpacing: 1,
+      color: c.onAccent,
+    },
+    iconBtn: {
+      width: 56,
+      height: 56,
+      backgroundColor: c.surface,
+      borderRadius: 16,
+      alignItems: "center",
+      justifyContent: "center",
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    libraryPanel: {
+      width: "100%",
+      backgroundColor: c.surface,
+      padding: 20,
+      borderRadius: 16,
+      marginBottom: 30,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    sectionHeader: {
+      color: c.textMuted,
+      fontSize: 10,
+      fontWeight: "900",
+      marginBottom: 15,
+      textTransform: "uppercase",
+      letterSpacing: 1,
+    },
+    statusRow: { flexDirection: "row", gap: 8, marginBottom: 20 },
+    statusChip: {
+      flex: 1,
+      paddingVertical: 10,
+      alignItems: "center",
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.background,
+    },
+    statusText: { color: c.textMuted, fontSize: 10, fontWeight: "800" },
+    notesInput: {
+      backgroundColor: c.background,
+      color: c.text,
+      borderRadius: 10,
+      padding: 15,
+      minHeight: 120,
+      textAlignVertical: "top",
+      borderWidth: 1,
+      borderColor: c.border,
+      fontSize: 15,
+    },
+    metaGrid: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      width: "100%",
+      marginBottom: 30,
+      backgroundColor: c.surface,
+      borderRadius: 16,
+      padding: 20,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    metaItem: { width: "50%", marginBottom: 15, alignItems: "center" },
+    metaLabel: {
+      color: c.textFaint,
+      fontSize: 10,
+      fontWeight: "900",
+      marginBottom: 4,
+    },
+    metaValue: { color: c.text, fontSize: 14, fontWeight: "700" },
+    desc: {
+      color: c.textMuted,
+      lineHeight: 26,
+      fontSize: 16,
+      marginBottom: 40,
+      width: "100%",
+    },
+    tagRow: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      justifyContent: "center",
+      gap: 8,
+      marginBottom: 40,
+    },
+    tag: {
+      backgroundColor: c.surface,
+      paddingVertical: 8,
+      paddingHorizontal: 14,
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    tagText: { color: c.textMuted, fontSize: 11, fontWeight: "600" },
+    secondaryBtn: {
+      flexDirection: "row",
+      width: "100%",
+      padding: 16,
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: c.border,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: c.surface,
+      marginBottom: 24,
+    },
+    secondaryBtnText: { color: c.accentText, fontWeight: "700", fontSize: 14 },
+    snippetsBlock: {
+      marginTop: 20,
+      paddingTop: 16,
+      borderTopWidth: 1,
+      borderTopColor: c.border,
+    },
+    snippetRow: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 12,
+      paddingVertical: 10,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.border,
+    },
+    snippetText: {
+      flex: 1,
+      color: c.textSecondary,
+      fontSize: 14,
+      lineHeight: 21,
+      fontStyle: "italic",
+    },
+  });

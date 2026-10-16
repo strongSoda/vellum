@@ -5686,7 +5686,7 @@ export const VOLUME_5 = [
   },
   {
     id: 2350,
-    title: "His last bow : $b Some later reminiscences of Sherlock Holmes",
+    title: "His Last Bow: Some Later Reminiscences of Sherlock Holmes",
     authors: [
       { name: "Doyle, Arthur Conan", birth_year: 1859, death_year: 1930 },
     ],

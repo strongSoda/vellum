@@ -114,6 +114,7 @@ export const MemoizedReader = React.memo(
     onNavigationLoaded,
     onChangeSection,
     onSingleTap,
+    onReady,
   }: any) => {
     return (
       <Reader
@@ -133,6 +134,7 @@ export const MemoizedReader = React.memo(
         onNavigationLoaded={onNavigationLoaded}
         onChangeSection={onChangeSection}
         onSingleTap={onSingleTap}
+        onReady={onReady}
       />
     );
   },

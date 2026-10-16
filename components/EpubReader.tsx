@@ -1,6 +1,7 @@
 import { ReaderProvider, useReader } from "@epubjs-react-native/core";
 import { Ionicons } from "@expo/vector-icons";
 import Slider from "@react-native-community/slider";
+import { StatusBar } from "expo-status-bar";
 import React, {
   useCallback,
   useEffect,
@@ -14,6 +15,8 @@ import {
   FlatList,
   Linking,
   Modal,
+  Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -22,7 +25,19 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import {
+  buildEpubTheme,
+  READER_FONT_SIZES,
+  READER_FONTS,
+  READER_THEMES,
+  ReaderFont,
+  ReaderPrefs,
+  ReaderTheme,
+  resolveReaderFont,
+  resolveReaderTheme,
+} from "@/constants/ReaderThemes";
 import { useLibrary } from "@/context/LibraryContext";
+import { useAppTheme } from "@/context/ThemeContext";
 import { useLegacyFileSystem } from "@/hooks/useLegacyFileSystem";
 import { downloadDictionary, getLocalDefinition } from "@/utils/Dictionary";
 import { MemoizedReader } from "./MemoReader";
@@ -51,7 +66,9 @@ const ReaderEngine = ({
   initialLocation,
   handleSelection,
   handleExternalLink,
-  settings,
+  readerTheme,
+  readerFont,
+  fontSize,
   bookId,
   setProgress,
   setSectionLabel,
@@ -62,14 +79,38 @@ const ReaderEngine = ({
   onPageChanged,
 }: any) => {
   const { updateLocation } = useLibrary();
-  const { goToLocation, changeFontFamily, currentLocation, atEnd } =
-    useReader();
+  const {
+    goToLocation,
+    changeTheme,
+    changeFontFamily,
+    changeFontSize,
+    currentLocation,
+    atEnd,
+  } = useReader();
   const hasJumped = useRef(false);
   const hasMarkedComplete = useRef(false);
 
+  // The page theme the book opens with. The library reads it once on mount;
+  // later changes go through changeTheme below.
+  const [initialTheme] = useState(() => buildEpubTheme(readerTheme, readerFont));
+
+  // Re-apply the reading preferences whenever they change, and once the book
+  // is ready (changes made while it was still loading would be lost).
+  const applyPrefs = useCallback(() => {
+    changeTheme(buildEpubTheme(readerTheme, readerFont));
+    changeFontFamily(readerFont.css);
+    changeFontSize(`${fontSize}%`);
+  }, [readerTheme, readerFont, fontSize, changeTheme, changeFontFamily, changeFontSize]);
+
+  const applyPrefsRef = useRef(applyPrefs);
   useEffect(() => {
-    if (settings.font) changeFontFamily(settings.font);
-  }, [settings.font, changeFontFamily]);
+    applyPrefsRef.current = applyPrefs;
+    applyPrefs();
+  }, [applyPrefs]);
+
+  const stableOnReady = useCallback(() => {
+    applyPrefsRef.current();
+  }, []);
 
   const handleLocationsReady = useCallback(() => {
     if (initialLocation && !hasJumped.current) {
@@ -149,38 +190,39 @@ const ReaderEngine = ({
       onNavigationLoaded={stableOnNavLoaded}
       onChangeSection={stableOnChangeSection}
       onSingleTap={stableOnSingleTap}
-      defaultTheme={{
-        body: {
-          background: "#050505 !important",
-          color: "#CCCCCC !important",
-          "font-family": `${settings.font} !important`,
-        },
-      }}
+      onReady={stableOnReady}
+      defaultTheme={initialTheme}
     />
   );
 };
 
 // ─── Page Turner Buttons ─────────────────────────────────────────────────────
 // Now always rendered; size adapts to screen width.
-const PageTurnerButtons = ({ compact }: { compact?: boolean }) => {
+const PageTurnerButtons = ({
+  compact,
+  color,
+}: {
+  compact?: boolean;
+  color: string;
+}) => {
   const { goNext, goPrevious } = useReader();
   const btnWidth = compact ? 36 : 48;
   const iconSize = compact ? 22 : 28;
   return (
     <>
       <TouchableOpacity
-        onPress={goPrevious}
+        onPress={() => goPrevious()}
         style={[styles.pageTurnLeft, { width: btnWidth }]}
         activeOpacity={0.6}
       >
-        <Ionicons name="chevron-back" size={iconSize} color="#888" />
+        <Ionicons name="chevron-back" size={iconSize} color={color} />
       </TouchableOpacity>
       <TouchableOpacity
-        onPress={goNext}
+        onPress={() => goNext()}
         style={[styles.pageTurnRight, { width: btnWidth }]}
         activeOpacity={0.6}
       >
-        <Ionicons name="chevron-forward" size={iconSize} color="#888" />
+        <Ionicons name="chevron-forward" size={iconSize} color={color} />
       </TouchableOpacity>
     </>
   );
@@ -192,11 +234,13 @@ const TocPanel = ({
   visible,
   onClose,
   onSelectChapter,
+  theme,
 }: {
   toc: TocItem[];
   visible: boolean;
   onClose: () => void;
   onSelectChapter: (href: string) => void;
+  theme: ReaderTheme;
 }) => {
   if (!visible) return null;
 
@@ -213,11 +257,13 @@ const TocPanel = ({
   return (
     <Modal visible={visible} transparent animationType="slide">
       <View style={styles.tocOverlay}>
-        <View style={styles.tocContainer}>
-          <View style={styles.tocHeader}>
-            <Text style={styles.tocTitle}>Table of Contents</Text>
+        <View style={[styles.tocContainer, { backgroundColor: theme.chrome }]}>
+          <View style={[styles.tocHeader, { borderBottomColor: theme.border }]}>
+            <Text style={[styles.tocTitle, { color: theme.text }]}>
+              Table of Contents
+            </Text>
             <TouchableOpacity onPress={onClose}>
-              <Ionicons name="close" size={24} color="#FFF" />
+              <Ionicons name="close" size={24} color={theme.text} />
             </TouchableOpacity>
           </View>
           <FlatList
@@ -225,13 +271,19 @@ const TocPanel = ({
             keyExtractor={(_, i) => String(i)}
             renderItem={({ item: { item, level } }) => (
               <TouchableOpacity
-                style={[styles.tocItem, { paddingLeft: 16 + level * 16 }]}
+                style={[
+                  styles.tocItem,
+                  { paddingLeft: 16 + level * 16, borderBottomColor: theme.border },
+                ]}
                 onPress={() => {
                   onSelectChapter(item.href);
                   onClose();
                 }}
               >
-                <Text style={styles.tocItemText} numberOfLines={2}>
+                <Text
+                  style={[styles.tocItemText, { color: theme.text }]}
+                  numberOfLines={2}
+                >
                   {item.label.trim()}
                 </Text>
               </TouchableOpacity>
@@ -244,10 +296,10 @@ const TocPanel = ({
 };
 
 // ─── TOC Button (inside ReaderProvider) ──────────────────────────────────────
-const TocGoTo = ({ onOpen }: { onOpen: () => void }) => {
+const TocGoTo = ({ onOpen, color }: { onOpen: () => void; color: string }) => {
   return (
     <TouchableOpacity onPress={onOpen} style={styles.themeBtn}>
-      <Ionicons name="list-outline" size={18} color="#888" />
+      <Ionicons name="list-outline" size={20} color={color} />
     </TouchableOpacity>
   );
 };
@@ -276,7 +328,7 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
   const [progress, setProgress] = useState({ percent: 0, cfi: "" });
   const [pageInfo, setPageInfo] = useState<PageInfo | null>(null);
   const [popupData, setPopupData] = useState<any>(null);
-  const [settings, setSettings] = useState({ font: "Georgia, serif" });
+  const [settingsVisible, setSettingsVisible] = useState(false);
   const [dictDownloading, setDictDownloading] = useState(false);
   const [dictProgress, setDictProgress] = useState(0);
   const [sectionLabel, setSectionLabel] = useState("");
@@ -291,7 +343,10 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
   const lastSelectionTs = useRef<number>(0);
 
   const fs = useLegacyFileSystem();
-  const { savedBooks, updateNotes, updateStatus } = useLibrary();
+  const { savedBooks, addSnippet, updateStatus } = useLibrary();
+  const { scheme, readerPrefs, updateReaderPrefs } = useAppTheme();
+  const readerTheme = resolveReaderTheme(readerPrefs.theme, scheme);
+  const readerFont = resolveReaderFont(readerPrefs.font);
   const { width: screenWidth } = useWindowDimensions();
   const isLargeScreen = screenWidth >= LARGE_SCREEN_THRESHOLD;
 
@@ -400,15 +455,24 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
   }, [book?.id, savedBooks]);
 
   // ── Snippet saving ──
-  const handleSaveSnippet = (text: string) => {
+  const handleSaveSnippet = async (text: string) => {
     if (!book?.id) return;
-    const existing = savedBooks.find((b: any) => b.id === book.id);
-    const newNote = existing?.notes
-      ? `${existing.notes}\n\nSnippet: "${text}"`
-      : `Snippet: "${text}"`;
-    updateNotes(book.id, newNote);
+    const cfi = popupData?.cfi;
     setPopupData(null);
-    Alert.alert("Saved", "Snippet added to your book notes.");
+    const saved = await addSnippet(book.id, text, cfi);
+    Alert.alert(
+      saved ? "Saved" : "Couldn't Save",
+      saved
+        ? "Snippet added. Find all your snippets in the Snippets tab."
+        : "Add this book to your library to save snippets.",
+    );
+  };
+
+  // ── Font size steps ──
+  const stepFontSize = (dir: 1 | -1) => {
+    const i = READER_FONT_SIZES.indexOf(readerPrefs.fontSize);
+    const next = READER_FONT_SIZES[Math.min(READER_FONT_SIZES.length - 1, Math.max(0, i + dir))];
+    if (next !== readerPrefs.fontSize) updateReaderPrefs({ fontSize: next });
   };
 
   // ── Dictionary download ──
@@ -475,24 +539,38 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
       presentationStyle="fullScreen"
     >
       <ReaderProvider key="stable-epub-context">
-        <SafeAreaView style={styles.container}>
+        <SafeAreaView
+          style={[styles.container, { backgroundColor: readerTheme.background }]}
+        >
+          <StatusBar style={readerTheme.dark ? "light" : "dark"} />
           {/* ─ Header ─ */}
           {showUI && (
-            <View style={styles.header}>
+            <View
+              style={[
+                styles.header,
+                { backgroundColor: readerTheme.chrome, borderBottomColor: readerTheme.border },
+              ]}
+            >
               <TouchableOpacity onPress={onClose}>
-                <Ionicons name="close" size={28} color="#FFF" />
+                <Ionicons name="close" size={28} color={readerTheme.text} />
               </TouchableOpacity>
               <View style={styles.headerCenter}>
-                <Text style={styles.headerTitle} numberOfLines={1}>
+                <Text
+                  style={[styles.headerTitle, { color: readerTheme.text }]}
+                  numberOfLines={1}
+                >
                   {book.title}
                 </Text>
                 {sectionLabel ? (
-                  <Text style={styles.chapterLabel} numberOfLines={1}>
+                  <Text
+                    style={[styles.chapterLabel, { color: readerTheme.muted }]}
+                    numberOfLines={1}
+                  >
                     {sectionLabel}
                   </Text>
                 ) : null}
               </View>
-              <Text style={styles.progressText}>
+              <Text style={[styles.progressText, { color: readerTheme.link }]}>
                 {Math.round(progress.percent * 100)}%
               </Text>
             </View>
@@ -508,7 +586,9 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
                   initialLocation={savedCfi}
                   handleSelection={handleSelection}
                   handleExternalLink={handleExternalLink}
-                  settings={settings}
+                  readerTheme={readerTheme}
+                  readerFont={readerFont}
+                  fontSize={readerPrefs.fontSize}
                   bookId={book.id}
                   setProgress={setProgress}
                   setPageInfo={setPageInfo}
@@ -524,76 +604,98 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
                   onDone={() => setTocTarget(null)}
                 />
                 {/* Always show page-turn buttons; compact on small screens */}
-                <PageTurnerButtons compact={!isLargeScreen} />
+                <PageTurnerButtons
+                  compact={!isLargeScreen}
+                  color={readerTheme.muted}
+                />
                 {/* Floating button to exit immersive mode */}
                 {!showUI && (
                   <TouchableOpacity
                     onPress={() => setShowUI(true)}
-                    style={styles.immersiveExitBtn}
+                    style={[
+                      styles.immersiveExitBtn,
+                      { backgroundColor: readerTheme.chrome, borderColor: readerTheme.border },
+                    ]}
                     activeOpacity={0.7}
                   >
-                    <Ionicons name="contract-outline" size={16} color="#999" />
+                    <Ionicons
+                      name="contract-outline"
+                      size={16}
+                      color={readerTheme.muted}
+                    />
                   </TouchableOpacity>
                 )}
               </>
             ) : (
               <View style={styles.center}>
-                <ActivityIndicator color="#2DDA93" size="large" />
+                <ActivityIndicator color={readerTheme.link} size="large" />
               </View>
             )}
           </View>
 
           {/* ─ Footer ─ */}
           {isReady && showUI && (
-            <View style={styles.footer}>
+            <View
+              style={[
+                styles.footer,
+                { backgroundColor: readerTheme.chrome, borderTopColor: readerTheme.border },
+              ]}
+            >
               {/* Page info */}
               {pageInfo && (
-                <Text style={styles.pageInfoText}>
+                <Text style={[styles.pageInfoText, { color: readerTheme.muted }]}>
                   Page {pageInfo.page} of {pageInfo.total}
                 </Text>
               )}
               <View style={styles.themeRow}>
                 <TouchableOpacity
-                  onPress={() => setSettings({ font: "Georgia, serif" })}
+                  onPress={() => setSettingsVisible(true)}
                   style={styles.themeBtn}
+                  accessibilityLabel="Reading settings"
                 >
-                  <Text
-                    style={[
-                      styles.themeBtnText,
-                      settings.font.includes("Georgia") && { color: "#2DDA93" },
-                    ]}
-                  >
-                    SERIF
-                  </Text>
+                  <Text style={[styles.aaText, { color: readerTheme.text }]}>Aa</Text>
                 </TouchableOpacity>
+                <View style={[styles.divider, { backgroundColor: readerTheme.border }]} />
                 <TouchableOpacity
-                  onPress={() => setSettings({ font: "system-ui" })}
+                  onPress={() => stepFontSize(-1)}
                   style={styles.themeBtn}
+                  accessibilityLabel="Smaller text"
                 >
-                  <Text
-                    style={[
-                      styles.toolText,
-                      settings.font.includes("system") && { color: "#2DDA93" },
-                    ]}
-                  >
-                    SANS
-                  </Text>
+                  <Ionicons name="remove" size={22} color={readerTheme.text} />
                 </TouchableOpacity>
-                <View style={styles.divider} />
-                <InternalFontSizers />
-                <View style={styles.divider} />
+                <Text style={[styles.toolText, { color: readerTheme.muted }]}>
+                  {readerPrefs.fontSize}%
+                </Text>
+                <TouchableOpacity
+                  onPress={() => stepFontSize(1)}
+                  style={styles.themeBtn}
+                  accessibilityLabel="Larger text"
+                >
+                  <Ionicons name="add" size={22} color={readerTheme.text} />
+                </TouchableOpacity>
                 {tocData.length > 0 && (
-                  <TocGoTo onOpen={() => setTocVisible(true)} />
+                  <>
+                    <View style={[styles.divider, { backgroundColor: readerTheme.border }]} />
+                    <TocGoTo
+                      onOpen={() => setTocVisible(true)}
+                      color={readerTheme.muted}
+                    />
+                  </>
                 )}
-                <View style={styles.divider} />
+                <View style={[styles.divider, { backgroundColor: readerTheme.border }]} />
                 <TouchableOpacity
                   onPress={() => setShowUI(false)}
                   style={styles.themeBtn}
+                  accessibilityLabel="Hide controls"
                 >
-                  <Ionicons name="expand-outline" size={18} color="#888" />
+                  <Ionicons name="expand-outline" size={18} color={readerTheme.muted} />
                 </TouchableOpacity>
               </View>
-              <InternalScrubber screenWidth={screenWidth} progress={progress} />
+              <InternalScrubber
+                screenWidth={screenWidth}
+                progress={progress}
+                theme={readerTheme}
+              />
             </View>
           )}
 
@@ -605,6 +707,7 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
             downloading={dictDownloading}
             downloadProgress={dictProgress}
             onDownload={() => handleDownloadDictionary(popupData?.word)}
+            theme={readerTheme}
           />
 
           <TocPanel
@@ -612,6 +715,16 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
             visible={tocVisible}
             onClose={() => setTocVisible(false)}
             onSelectChapter={handleSelectChapter}
+            theme={readerTheme}
+          />
+
+          <ReaderSettingsSheet
+            visible={settingsVisible}
+            onClose={() => setSettingsVisible(false)}
+            prefs={readerPrefs}
+            onChange={updateReaderPrefs}
+            theme={readerTheme}
+            scheme={scheme}
           />
         </SafeAreaView>
       </ReaderProvider>
@@ -620,21 +733,7 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
 };
 
 // ─── Sub-components (inside ReaderProvider) ──────────────────────────────────
-const InternalFontSizers = () => {
-  const { changeFontSize } = useReader();
-  return (
-    <View style={{ flexDirection: "row", gap: 20 }}>
-      <TouchableOpacity onPress={() => changeFontSize("115%")}>
-        <Ionicons name="add" size={22} color="#FFF" />
-      </TouchableOpacity>
-      <TouchableOpacity onPress={() => changeFontSize("85%")}>
-        <Ionicons name="remove" size={22} color="#FFF" />
-      </TouchableOpacity>
-    </View>
-  );
-};
-
-const InternalScrubber = ({ progress, screenWidth }: any) => {
+const InternalScrubber = ({ progress, screenWidth, theme }: any) => {
   const { goToLocation } = useReader();
   return (
     <Slider
@@ -642,51 +741,209 @@ const InternalScrubber = ({ progress, screenWidth }: any) => {
       minimumValue={0}
       maximumValue={1}
       value={progress.percent}
-      minimumTrackTintColor="#2DDA93"
-      maximumTrackTintColor="#333"
-      thumbTintColor="#2DDA93"
-      onSlidingComplete={(val) => goToLocation(val)}
+      minimumTrackTintColor={theme.link}
+      maximumTrackTintColor={theme.border}
+      thumbTintColor={theme.link}
+      onSlidingComplete={(val) => goToLocation(String(val))}
     />
+  );
+};
+
+// ─── Reading settings sheet ──────────────────────────────────────────────────
+const ReaderSettingsSheet = ({
+  visible,
+  onClose,
+  prefs,
+  onChange,
+  theme,
+  scheme,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  prefs: ReaderPrefs;
+  onChange: (patch: Partial<ReaderPrefs>) => void;
+  theme: ReaderTheme;
+  scheme: "light" | "dark";
+}) => {
+  if (!visible) return null;
+  const autoTheme = resolveReaderTheme("auto", scheme);
+  const sizeIndex = READER_FONT_SIZES.indexOf(prefs.fontSize);
+
+  const swatch = (
+    id: ReaderPrefs["theme"],
+    label: string,
+    t: ReaderTheme,
+  ) => {
+    const active = prefs.theme === id;
+    return (
+      <TouchableOpacity
+        key={id}
+        onPress={() => onChange({ theme: id })}
+        style={styles.swatchItem}
+        accessibilityLabel={`${label} theme`}
+        accessibilityState={{ selected: active }}
+      >
+        <View
+          style={[
+            styles.swatch,
+            { backgroundColor: t.background, borderColor: active ? theme.link : t.border },
+            active && styles.swatchActive,
+          ]}
+        >
+          {id === "auto" ? (
+            <Ionicons name="contrast-outline" size={20} color={t.text} />
+          ) : (
+            <Text style={[styles.swatchAa, { color: t.text }]}>Aa</Text>
+          )}
+        </View>
+        <Text
+          style={[
+            styles.swatchLabel,
+            { color: active ? theme.link : theme.muted },
+          ]}
+        >
+          {label}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const fontChip = (f: ReaderFont) => {
+    const active = resolveReaderFont(prefs.font).id === f.id;
+    return (
+      <TouchableOpacity
+        key={f.id}
+        onPress={() => onChange({ font: f.id })}
+        style={[
+          styles.fontChip,
+          {
+            borderColor: active ? theme.link : theme.border,
+            backgroundColor: active ? theme.background : "transparent",
+          },
+        ]}
+        accessibilityState={{ selected: active }}
+      >
+        <Text
+          style={[
+            styles.fontChipText,
+            { color: active ? theme.link : theme.text, fontFamily: f.preview },
+          ]}
+        >
+          {f.label}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
+  return (
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <View style={styles.sheetOverlay}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        <View style={[styles.sheet, { backgroundColor: theme.chrome }]}>
+          <View style={[styles.tocHeader, { borderBottomColor: theme.border }]}>
+            <Text style={[styles.tocTitle, { color: theme.text }]}>
+              Reading Settings
+            </Text>
+            <TouchableOpacity onPress={onClose} hitSlop={10}>
+              <Ionicons name="close" size={24} color={theme.text} />
+            </TouchableOpacity>
+          </View>
+
+          <Text style={[styles.sheetLabel, { color: theme.muted }]}>THEME</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.sheetRow}
+          >
+            {swatch("auto", "Auto", autoTheme)}
+            {READER_THEMES.map((t) => swatch(t.id, t.label, t))}
+          </ScrollView>
+
+          <Text style={[styles.sheetLabel, { color: theme.muted }]}>FONT</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.sheetRow}
+          >
+            {READER_FONTS.map(fontChip)}
+          </ScrollView>
+
+          <Text style={[styles.sheetLabel, { color: theme.muted }]}>TEXT SIZE</Text>
+          <View style={[styles.sizeRow, { borderColor: theme.border }]}>
+            <TouchableOpacity
+              onPress={() =>
+                sizeIndex > 0 && onChange({ fontSize: READER_FONT_SIZES[sizeIndex - 1] })
+              }
+              style={styles.sizeBtn}
+              disabled={sizeIndex <= 0}
+              accessibilityLabel="Smaller text"
+            >
+              <Text style={[styles.sizeSmallA, { color: sizeIndex <= 0 ? theme.border : theme.text }]}>
+                A
+              </Text>
+            </TouchableOpacity>
+            <Text style={[styles.sizeValue, { color: theme.text }]}>
+              {prefs.fontSize}%
+            </Text>
+            <TouchableOpacity
+              onPress={() =>
+                sizeIndex < READER_FONT_SIZES.length - 1 &&
+                onChange({ fontSize: READER_FONT_SIZES[sizeIndex + 1] })
+              }
+              style={styles.sizeBtn}
+              disabled={sizeIndex >= READER_FONT_SIZES.length - 1}
+              accessibilityLabel="Larger text"
+            >
+              <Text
+                style={[
+                  styles.sizeLargeA,
+                  {
+                    color:
+                      sizeIndex >= READER_FONT_SIZES.length - 1 ? theme.border : theme.text,
+                  },
+                ]}
+              >
+                A
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 };
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#050505" },
+  container: { flex: 1 },
   // Header
   header: {
     flexDirection: "row",
     alignItems: "center",
     padding: 15,
     borderBottomWidth: 1,
-    borderBottomColor: "#222",
   },
   headerCenter: { flex: 1, marginHorizontal: 10 },
   headerTitle: {
-    color: "#FFF",
     textAlign: "center",
     fontWeight: "bold",
     fontSize: 13,
   },
   chapterLabel: {
-    color: "#888",
     textAlign: "center",
     fontSize: 11,
     marginTop: 2,
   },
-  progressText: { color: "#2DDA93", fontSize: 11, fontWeight: "bold" },
+  progressText: { fontSize: 11, fontWeight: "bold" },
   // Reader
   readerContainer: { flex: 1 },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
   // Footer
   footer: {
-    backgroundColor: "#111",
     borderTopWidth: 1,
-    borderTopColor: "#222",
     paddingBottom: 20,
   },
   pageInfoText: {
-    color: "#555",
     fontSize: 10,
     textAlign: "center",
     paddingTop: 8,
@@ -695,13 +952,13 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
-    paddingVertical: 15,
-    gap: 15,
+    paddingVertical: 12,
+    gap: 6,
   },
-  themeBtn: { paddingHorizontal: 12 },
-  themeBtnText: { color: "#666", fontSize: 11, fontWeight: "bold" },
-  toolText: { color: "#666", fontSize: 11, fontWeight: "bold" },
-  divider: { width: 1, height: 20, backgroundColor: "#333" },
+  themeBtn: { paddingHorizontal: 10, paddingVertical: 4 },
+  aaText: { fontSize: 17, fontWeight: "600", fontFamily: "Georgia" },
+  toolText: { fontSize: 11, fontWeight: "bold", minWidth: 34, textAlign: "center" },
+  divider: { width: 1, height: 20, marginHorizontal: 4 },
   slider: { alignSelf: "center", height: 40 },
   // Page turners — always visible, narrower on small screens
   pageTurnLeft: {
@@ -729,13 +986,11 @@ const styles = StyleSheet.create({
     position: "absolute",
     bottom: 16,
     alignSelf: "center",
-    backgroundColor: "rgba(30,30,30,0.85)",
     borderRadius: 20,
     paddingHorizontal: 20,
     paddingVertical: 8,
     zIndex: 10,
     borderWidth: 1,
-    borderColor: "#333",
   },
   // TOC panel
   tocOverlay: {
@@ -744,7 +999,6 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   tocContainer: {
-    backgroundColor: "#111",
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     maxHeight: "70%",
@@ -756,14 +1010,63 @@ const styles = StyleSheet.create({
     alignItems: "center",
     padding: 16,
     borderBottomWidth: 1,
-    borderBottomColor: "#222",
   },
-  tocTitle: { color: "#FFF", fontSize: 16, fontWeight: "bold" },
+  tocTitle: { fontSize: 16, fontWeight: "bold" },
   tocItem: {
     paddingVertical: 14,
     paddingRight: 16,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#222",
   },
-  tocItemText: { color: "#CCC", fontSize: 14 },
+  tocItemText: { fontSize: 14 },
+  // Reading settings sheet
+  sheetOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "flex-end",
+  },
+  sheet: {
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingBottom: 36,
+  },
+  sheetLabel: {
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1,
+    marginTop: 18,
+    marginBottom: 10,
+    paddingHorizontal: 16,
+  },
+  sheetRow: { paddingHorizontal: 16, gap: 12 },
+  swatchItem: { alignItems: "center", gap: 6 },
+  swatch: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    borderWidth: 1.5,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  swatchActive: { borderWidth: 3 },
+  swatchAa: { fontSize: 18, fontWeight: "600", fontFamily: "Georgia" },
+  swatchLabel: { fontSize: 11, fontWeight: "600" },
+  fontChip: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  fontChipText: { fontSize: 15 },
+  sizeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginHorizontal: 16,
+    borderWidth: 1,
+    borderRadius: 12,
+  },
+  sizeBtn: { paddingHorizontal: 28, paddingVertical: 10 },
+  sizeSmallA: { fontSize: 15, fontWeight: "600" },
+  sizeLargeA: { fontSize: 24, fontWeight: "600" },
+  sizeValue: { fontSize: 14, fontWeight: "700" },
 });

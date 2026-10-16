@@ -6469,7 +6469,7 @@ export const VOLUME_6 = [
   },
   {
     id: 69700,
-    title: "The case-book of Sherlock Holmes",
+    title: "The Case-Book of Sherlock Holmes",
     authors: [
       { name: "Doyle, Arthur Conan", birth_year: 1859, death_year: 1930 },
     ],

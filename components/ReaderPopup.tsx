@@ -9,6 +9,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { ReaderTheme } from "../constants/ReaderThemes";
 
 export const ReaderPopup = ({
   data,
@@ -17,8 +18,10 @@ export const ReaderPopup = ({
   onClose,
   downloading,
   downloadProgress,
+  theme,
 }: any) => {
   if (!data) return null;
+  const t: ReaderTheme = theme;
 
   const isDownloading = data.type === "downloading" || downloading;
   const progressPercent = Math.round((downloadProgress || 0) * 100);
@@ -29,9 +32,9 @@ export const ReaderPopup = ({
       <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
 
       {/* Sheet now drops from the TOP so it sits above OS selection handles */}
-      <View style={styles.sheet}>
+      <View style={[styles.sheet, { backgroundColor: t.chrome }]}>
         <View style={styles.header}>
-          <Text style={styles.title}>
+          <Text style={[styles.title, { color: t.link }]}>
             {isDownloading
               ? "DOWNLOADING DICTIONARY"
               : data.type === "definition"
@@ -39,7 +42,7 @@ export const ReaderPopup = ({
                 : "SAVE SNIPPET"}
           </Text>
           <TouchableOpacity onPress={onClose} hitSlop={12}>
-            <Ionicons name="close-circle" size={24} color="#444" />
+            <Ionicons name="close-circle" size={24} color={t.muted} />
           </TouchableOpacity>
         </View>
 
@@ -48,15 +51,15 @@ export const ReaderPopup = ({
           {isDownloading ? (
             <View>
               <View style={styles.downloadContainer}>
-                <ActivityIndicator color="#2DDA93" size="small" />
-                <Text style={styles.downloadText}>
+                <ActivityIndicator color={t.link} size="small" />
+                <Text style={[styles.downloadText, { color: t.text }]}>
                   {progressPercent > 0
                     ? `Downloading... ${progressPercent}%`
                     : "Starting download..."}
                 </Text>
               </View>
               {progressPercent > 0 && (
-                <View style={styles.progressBarBg}>
+                <View style={[styles.progressBarBg, { backgroundColor: t.border }]}>
                   <View
                     style={[
                       styles.progressBarFill,
@@ -66,29 +69,36 @@ export const ReaderPopup = ({
                 </View>
               )}
               {data.word && (
-                <Text style={styles.downloadHint}>
-                  Will show meaning for "{data.word}" when complete
+                <Text style={[styles.downloadHint, { color: t.muted }]}>
+                  Will show meaning for “{data.word}” when complete
                 </Text>
               )}
             </View>
           ) : data.type === "definition" || data.type === "prompt_download" ? (
             <View>
-              <Text style={styles.wordTitle}>{data.word?.toUpperCase()}</Text>
-              <Text style={styles.definitionText}>{data.content}</Text>
+              <Text style={[styles.wordTitle, { color: t.text }]}>{data.word?.toUpperCase()}</Text>
+              <Text style={[styles.definitionText, { color: t.text }]}>{data.content}</Text>
               {data.justDownloaded && (
-                <Text style={styles.downloadedBadge}>✓ Dictionary ready</Text>
+                <Text style={[styles.downloadedBadge, { color: t.link }]}>✓ Dictionary ready</Text>
               )}
             </View>
           ) : (
             <View>
-              <Text style={styles.snippetPreview}>"{data.content}"</Text>
+              <Text
+                style={[
+                  styles.snippetPreview,
+                  { color: t.text, backgroundColor: t.background, borderColor: t.border },
+                ]}
+              >
+                “{data.content}”
+              </Text>
             </View>
           )}
         </ScrollView>
 
         {/* Fixed action buttons - always visible at bottom, outside ScrollView */}
         {!isDownloading && (
-          <View style={styles.actionArea}>
+          <View style={[styles.actionArea, { borderTopColor: t.border }]}>
             {data.type === "prompt_download" ? (
               <TouchableOpacity style={styles.saveBtn} onPress={onDownload}>
                 <Text style={styles.saveBtnText}>
@@ -100,13 +110,13 @@ export const ReaderPopup = ({
                 style={styles.saveBtn}
                 onPress={() => onSave(data.content)}
               >
-                <Text style={styles.saveBtnText}>Save to Library Notes</Text>
+                <Text style={styles.saveBtnText}>Save Snippet</Text>
               </TouchableOpacity>
             ) : null}
           </View>
         )}
 
-        <View style={styles.handle} />
+        <View style={[styles.handle, { backgroundColor: t.border }]} />
       </View>
     </View>
   );
@@ -122,7 +132,6 @@ const styles = StyleSheet.create({
     elevation: 10,
   },
   sheet: {
-    backgroundColor: "#161616",
     borderBottomLeftRadius: 20,
     borderBottomRightRadius: 20,
     padding: 20,
@@ -132,7 +141,6 @@ const styles = StyleSheet.create({
   handle: {
     width: 40,
     height: 4,
-    backgroundColor: "#333",
     borderRadius: 2,
     alignSelf: "center",
     marginTop: 12,
@@ -144,23 +152,20 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   title: {
-    color: "#2DDA93",
     fontWeight: "bold",
     fontSize: 12,
     letterSpacing: 1,
   },
   content: { flexShrink: 1 },
   wordTitle: {
-    color: "#FFF",
     fontSize: 20,
     fontWeight: "bold",
     marginBottom: 8,
   },
-  definitionText: { color: "#BBB", fontSize: 15, lineHeight: 22 },
+  definitionText: { fontSize: 15, lineHeight: 22, opacity: 0.85 },
   snippetPreview: {
-    color: "#FFF",
     fontSize: 14,
-    backgroundColor: "#000",
+    borderWidth: 1,
     padding: 12,
     borderRadius: 8,
   },
@@ -168,7 +173,6 @@ const styles = StyleSheet.create({
   actionArea: {
     paddingTop: 15,
     borderTopWidth: 1,
-    borderTopColor: "#222",
     marginTop: 10,
   },
   saveBtn: {
@@ -185,10 +189,9 @@ const styles = StyleSheet.create({
     gap: 12,
     marginBottom: 12,
   },
-  downloadText: { color: "#FFF", fontSize: 16, fontWeight: "600" },
+  downloadText: { fontSize: 16, fontWeight: "600" },
   progressBarBg: {
     height: 6,
-    backgroundColor: "#333",
     borderRadius: 3,
     overflow: "hidden",
     marginBottom: 12,
@@ -198,9 +201,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#2DDA93",
     borderRadius: 3,
   },
-  downloadHint: { color: "#888", fontSize: 13, fontStyle: "italic" },
+  downloadHint: { fontSize: 13, fontStyle: "italic" },
   downloadedBadge: {
-    color: "#2DDA93",
     fontSize: 13,
     marginTop: 10,
     fontWeight: "600",
