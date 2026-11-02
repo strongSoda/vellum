@@ -1,7 +1,10 @@
 import { AppColors, AppPalette } from "@/constants/theme";
 import {
   DEFAULT_READER_PREFS,
+  READER_FLOWS,
   READER_FONT_SIZES,
+  READER_LINE_HEIGHTS,
+  READER_MARGINS,
   ReaderPrefs,
 } from "@/constants/ReaderThemes";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -70,6 +73,15 @@ export const AppThemeProvider = ({ children }: { children: React.ReactNode }) =>
           const parsed = { ...DEFAULT_READER_PREFS, ...JSON.parse(reader) };
           if (!READER_FONT_SIZES.includes(parsed.fontSize)) {
             parsed.fontSize = DEFAULT_READER_PREFS.fontSize;
+          }
+          if (!READER_MARGINS.some((m) => m.value === parsed.margin)) {
+            parsed.margin = DEFAULT_READER_PREFS.margin;
+          }
+          if (!READER_LINE_HEIGHTS.some((l) => l.value === parsed.lineHeight)) {
+            parsed.lineHeight = DEFAULT_READER_PREFS.lineHeight;
+          }
+          if (!READER_FLOWS.some((f) => f.value === parsed.flow)) {
+            parsed.flow = DEFAULT_READER_PREFS.flow;
           }
           setReaderPrefs(parsed);
         }

@@ -115,7 +115,12 @@ export const MemoizedReader = React.memo(
     onChangeSection,
     onSingleTap,
     onReady,
+    onDisplayError,
+    initialAnnotations,
+    onPressAnnotation,
+    flow,
   }: any) => {
+    const scrolled = flow === "scrolled";
     return (
       <Reader
         src={src}
@@ -135,11 +140,20 @@ export const MemoizedReader = React.memo(
         onChangeSection={onChangeSection}
         onSingleTap={onSingleTap}
         onReady={onReady}
+        onDisplayError={onDisplayError}
+        initialAnnotations={initialAnnotations}
+        onPressAnnotation={onPressAnnotation}
+        // Scroll mode reads the whole book as one continuous column; side
+        // swipes would otherwise jump whole chapters.
+        flow={scrolled ? "scrolled" : "paginated"}
+        manager={scrolled ? "continuous" : "default"}
+        enableSwipe={!scrolled}
       />
     );
   },
   (prev, next) => {
-    // ONLY re-render if the source file changes.
+    // ONLY re-render if the source file changes. (Flow changes remount the
+    // reader via a key in EpubReader — epub.js can't switch managers live.)
     // This prevents the "reset to page 1" bug.
     // All callbacks are stable refs — the library's View.js captures them on mount.
     return prev.src === next.src;

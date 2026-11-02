@@ -93,8 +93,12 @@ export default function SnippetsScreen() {
   };
 
   const renderItem = ({ item }: { item: SnippetItem }) => (
-    <View style={styles.card}>
-      <Ionicons name="chatbox-ellipses-outline" size={16} color={colors.accentText} style={styles.quoteIcon} />
+    <View style={[styles.card, item.color && { borderLeftWidth: 4, borderLeftColor: item.color }]}>
+      {item.color ? (
+        <Ionicons name="color-wand-outline" size={16} color={item.color} style={styles.quoteIcon} />
+      ) : (
+        <Ionicons name="chatbox-ellipses-outline" size={16} color={colors.accentText} style={styles.quoteIcon} />
+      )}
       <Text style={styles.quote} selectable>
         “{item.text}”
       </Text>

@@ -16,12 +16,13 @@ export const ReaderModal = ({ visible, book, onClose, localUri }: any) => {
   const t = resolveReaderTheme(readerPrefs.theme, scheme);
   const font = resolveReaderFont(readerPrefs.font);
   const fontPx = Math.round(18 * readerPrefs.fontSize / 100);
+  const { lineHeight, margin } = readerPrefs;
 
   useEffect(() => {
     if (visible && localUri) {
       loadBookContent();
     }
-  }, [visible, localUri, t, font, fontPx]);
+  }, [visible, localUri, t, font, fontPx, lineHeight, margin]);
 
   const loadBookContent = async () => {
     try {
@@ -57,8 +58,11 @@ export const ReaderModal = ({ visible, book, onClose, localUri }: any) => {
             color: ${t.text} !important;
             font-family: ${font.css} !important;
             font-size: ${fontPx}px !important;
-            line-height: 1.6 !important;
-            padding: 20px 25px 100px 25px !important;
+            line-height: ${lineHeight} !important;
+            padding: ${20 + margin}px ${25 + margin}px ${100 + margin}px ${25 + margin}px !important;
+          }
+          p, div, li, blockquote, td, dd {
+            line-height: ${lineHeight} !important;
           }
           /* Force all text elements to respect our color */
           p, div, span, h1, h2, h3, h4, h5, h6, li, blockquote {

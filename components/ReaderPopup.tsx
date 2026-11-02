@@ -9,12 +9,14 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { ReaderTheme } from "../constants/ReaderThemes";
+import { HIGHLIGHT_COLORS, ReaderTheme } from "../constants/ReaderThemes";
 
 export const ReaderPopup = ({
   data,
   onSave,
   onDownload,
+  onHighlight,
+  onRemoveHighlight,
   onClose,
   downloading,
   downloadProgress,
@@ -25,6 +27,38 @@ export const ReaderPopup = ({
 
   const isDownloading = data.type === "downloading" || downloading;
   const progressPercent = Math.round((downloadProgress || 0) * 100);
+  const isHighlight = data.type === "highlight";
+  // Anything selected in the page (passage or single word) can be highlighted.
+  const canHighlight =
+    !isDownloading &&
+    !!data.cfi &&
+    (isHighlight || data.type === "snippet" || data.type === "definition" || data.type === "prompt_download");
+
+  const colorRow = canHighlight && (
+    <View style={styles.colorRow}>
+      <Text style={[styles.colorLabel, { color: t.muted }]}>
+        {isHighlight ? "Color" : "Highlight"}
+      </Text>
+      {HIGHLIGHT_COLORS.map((c) => {
+        const active = isHighlight && data.color === c.color;
+        return (
+          <TouchableOpacity
+            key={c.id}
+            onPress={() => onHighlight(c.color)}
+            style={[
+              styles.colorDot,
+              { backgroundColor: c.color, borderColor: active ? t.text : "transparent" },
+            ]}
+            hitSlop={4}
+            accessibilityLabel={`${c.label} highlight`}
+            accessibilityState={{ selected: active }}
+          >
+            {active && <Ionicons name="checkmark" size={16} color="#000" />}
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
 
   return (
     <View style={styles.overlay} pointerEvents="box-none">
@@ -39,7 +73,9 @@ export const ReaderPopup = ({
               ? "DOWNLOADING DICTIONARY"
               : data.type === "definition"
                 ? "DICTIONARY"
-                : "SAVE SNIPPET"}
+                : isHighlight
+                  ? "HIGHLIGHT"
+                  : "SAVE SNIPPET"}
           </Text>
           <TouchableOpacity onPress={onClose} hitSlop={12}>
             <Ionicons name="close-circle" size={24} color={t.muted} />
@@ -99,7 +135,18 @@ export const ReaderPopup = ({
         {/* Fixed action buttons - always visible at bottom, outside ScrollView */}
         {!isDownloading && (
           <View style={[styles.actionArea, { borderTopColor: t.border }]}>
-            {data.type === "prompt_download" ? (
+            {colorRow}
+            {isHighlight ? (
+              <TouchableOpacity
+                style={[styles.secondaryBtn, { borderColor: t.border }]}
+                onPress={onRemoveHighlight}
+              >
+                <Ionicons name="trash-outline" size={16} color={t.text} />
+                <Text style={[styles.secondaryBtnText, { color: t.text }]}>
+                  Delete Highlight
+                </Text>
+              </TouchableOpacity>
+            ) : data.type === "prompt_download" ? (
               <TouchableOpacity style={styles.saveBtn} onPress={onDownload}>
                 <Text style={styles.saveBtnText}>
                   Download Dictionary (8MB)
@@ -182,6 +229,31 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   saveBtnText: { color: "#000", fontWeight: "bold" },
+  secondaryBtn: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 8,
+    borderWidth: 1,
+    padding: 13,
+    borderRadius: 12,
+  },
+  secondaryBtnText: { fontWeight: "600" },
+  colorRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 14,
+  },
+  colorLabel: { fontSize: 12, fontWeight: "700", flex: 1 },
+  colorDot: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: 2,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   // Download progress styles
   downloadContainer: {
     flexDirection: "row",

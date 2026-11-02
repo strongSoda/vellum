@@ -27,8 +27,12 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
   buildEpubTheme,
+  HIGHLIGHT_OPACITY,
   READER_FONT_SIZES,
+  READER_FLOWS,
   READER_FONTS,
+  READER_LINE_HEIGHTS,
+  READER_MARGINS,
   READER_THEMES,
   ReaderFont,
   ReaderPrefs,
@@ -36,10 +40,12 @@ import {
   resolveReaderFont,
   resolveReaderTheme,
 } from "@/constants/ReaderThemes";
-import { useLibrary } from "@/context/LibraryContext";
+import { Snippet, useLibrary } from "@/context/LibraryContext";
 import { useAppTheme } from "@/context/ThemeContext";
+import * as FileSystem from "expo-file-system/legacy";
 import { useLegacyFileSystem } from "@/hooks/useLegacyFileSystem";
 import { downloadDictionary, getLocalDefinition } from "@/utils/Dictionary";
+import { isImportedBook } from "@/utils/LocalBooks";
 import { MemoizedReader } from "./MemoReader";
 import { ReaderPopup } from "./ReaderPopup";
 
@@ -48,6 +54,39 @@ const LARGE_SCREEN_THRESHOLD = 768;
 // Minimum time (ms) between page-turn and allowing a new selection popup.
 // Prevents swipe gestures from accidentally triggering word lookups.
 const SELECTION_DEBOUNCE_MS = 400;
+
+// How long a book may take to open before we offer alternatives.
+const OPEN_TIMEOUT_MS = 25000;
+
+// Space kept above and below the text on top of the chosen page margin, so
+// lines never touch the header, footer or screen edge.
+const PAGE_VERTICAL_INSET = 12;
+
+// Jumps to a table-of-contents entry. TOC hrefs are relative to the book's
+// nav file, which isn't always next to the chapters, so a plain
+// rendition.display(href) silently finds no section in many books. Match the
+// spine item by file name when the direct lookup fails.
+const goToHrefJs = (href: string) => `
+(function () {
+  try {
+    var href = ${JSON.stringify(href)};
+    var parts = href.split('#');
+    var path = parts[0], hash = parts[1];
+    var section = path ? book.spine.get(path) : null;
+    if (!section && path) {
+      var name = decodeURIComponent(path.split('/').pop());
+      book.spine.each(function (item) {
+        if (!section && decodeURIComponent(item.href.split('/').pop()) === name) section = item;
+      });
+    }
+    var target = section ? section.href + (hash ? '#' + hash : '') : href;
+    rendition.display(target).catch(function () {
+      if (section) rendition.display(section.href);
+    });
+  } catch (e) {}
+})();
+true;
+`;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type TocItem = {
@@ -69,7 +108,14 @@ const ReaderEngine = ({
   readerTheme,
   readerFont,
   fontSize,
+  lineHeight,
+  flow,
   bookId,
+  highlights,
+  readerApiRef,
+  onBookOpened,
+  onOpenError,
+  onPressHighlight,
   setProgress,
   setSectionLabel,
   setPageInfo,
@@ -84,23 +130,58 @@ const ReaderEngine = ({
     changeTheme,
     changeFontFamily,
     changeFontSize,
+    addAnnotation,
+    removeAnnotationByCfi,
+    injectJavascript,
     currentLocation,
     atEnd,
   } = useReader();
-  const hasJumped = useRef(false);
+  // Where the book opens. Read once: later saves must not pull the reader back.
+  const [startCfi] = useState<string | undefined>(initialLocation);
   const hasMarkedComplete = useRef(false);
 
   // The page theme the book opens with. The library reads it once on mount;
   // later changes go through changeTheme below.
-  const [initialTheme] = useState(() => buildEpubTheme(readerTheme, readerFont));
+  const [initialTheme] = useState(() =>
+    buildEpubTheme(readerTheme, readerFont, lineHeight),
+  );
+
+  // Highlights drawn when the book opens; later ones go through readerApiRef.
+  const [initialAnnotations] = useState(() =>
+    (highlights as Snippet[]).map((s) => ({
+      type: "highlight",
+      cfiRange: s.cfi,
+      data: { id: s.id },
+      styles: { color: s.color, opacity: HIGHLIGHT_OPACITY },
+    })),
+  );
+
+  // Lets the parent (outside ReaderProvider) draw and clear highlights.
+  useEffect(() => {
+    readerApiRef.current = {
+      addHighlight: (cfi: string, color: string, id: string) =>
+        addAnnotation("highlight", cfi, { id }, { color, opacity: HIGHLIGHT_OPACITY }),
+      removeHighlight: (cfi: string) => removeAnnotationByCfi(cfi),
+      goToHref: (href: string) => injectJavascript(goToHrefJs(href)),
+      clearSelection: () =>
+        injectJavascript(`
+          try {
+            rendition.getContents().forEach(function (c) {
+              c.window.getSelection().removeAllRanges();
+            });
+          } catch (e) {}
+          true;
+        `),
+    };
+  }, [addAnnotation, removeAnnotationByCfi, injectJavascript, readerApiRef]);
 
   // Re-apply the reading preferences whenever they change, and once the book
   // is ready (changes made while it was still loading would be lost).
   const applyPrefs = useCallback(() => {
-    changeTheme(buildEpubTheme(readerTheme, readerFont));
+    changeTheme(buildEpubTheme(readerTheme, readerFont, lineHeight));
     changeFontFamily(readerFont.css);
     changeFontSize(`${fontSize}%`);
-  }, [readerTheme, readerFont, fontSize, changeTheme, changeFontFamily, changeFontSize]);
+  }, [readerTheme, readerFont, fontSize, lineHeight, changeTheme, changeFontFamily, changeFontSize]);
 
   const applyPrefsRef = useRef(applyPrefs);
   useEffect(() => {
@@ -108,16 +189,22 @@ const ReaderEngine = ({
     applyPrefs();
   }, [applyPrefs]);
 
+  // Jump to the saved place as soon as the first page is shown. (Waiting for
+  // onLocationsReady meant that, in long books, a chapter picked from the
+  // table of contents was undone when locations finished generating.)
   const stableOnReady = useCallback(() => {
     applyPrefsRef.current();
+    if (startCfi) goToLocation(startCfi);
+    onBookOpened();
   }, []);
 
-  const handleLocationsReady = useCallback(() => {
-    if (initialLocation && !hasJumped.current) {
-      goToLocation(initialLocation);
-      hasJumped.current = true;
-    }
-  }, [initialLocation, goToLocation]);
+  const stableOnDisplayError = useCallback((reason: string) => {
+    onOpenError(reason);
+  }, []);
+
+  const stableOnPressAnnotation = useCallback((annotation: any) => {
+    if (annotation?.data?.id) onPressHighlight(annotation.data.id);
+  }, []);
 
   // Persist location + update progress
   useEffect(() => {
@@ -183,7 +270,6 @@ const ReaderEngine = ({
       src={epubUri}
       fileSystem={() => fs}
       onSelected={stableSelection}
-      onLocationsReady={handleLocationsReady}
       onPressExternalLink={stableExternalLink}
       onFinish={stableOnFinish}
       onBeginning={stableOnBeginning}
@@ -191,7 +277,11 @@ const ReaderEngine = ({
       onChangeSection={stableOnChangeSection}
       onSingleTap={stableOnSingleTap}
       onReady={stableOnReady}
+      onDisplayError={stableOnDisplayError}
+      initialAnnotations={initialAnnotations}
+      onPressAnnotation={stableOnPressAnnotation}
       defaultTheme={initialTheme}
+      flow={flow}
     />
   );
 };
@@ -304,24 +394,6 @@ const TocGoTo = ({ onOpen, color }: { onOpen: () => void; color: string }) => {
   );
 };
 
-// ─── Internal TOC navigation helper (inside ReaderProvider) ──────────────────
-const TocNavigator = ({
-  targetHref,
-  onDone,
-}: {
-  targetHref: string | null;
-  onDone: () => void;
-}) => {
-  const { goToLocation } = useReader();
-  useEffect(() => {
-    if (targetHref) {
-      goToLocation(targetHref);
-      onDone();
-    }
-  }, [targetHref]);
-  return null;
-};
-
 // ═══ Main Modal ══════════════════════════════════════════════════════════════
 export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
   const [isReady, setIsReady] = useState(false);
@@ -335,34 +407,101 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
   const [showUI, setShowUI] = useState(true);
   const [tocData, setTocData] = useState<TocItem[]>([]);
   const [tocVisible, setTocVisible] = useState(false);
-  const [tocTarget, setTocTarget] = useState<string | null>(null);
+  const [bookOpened, setBookOpened] = useState(false);
+  // Why the book couldn't be shown: file missing, epub.js error, or still
+  // not open after OPEN_TIMEOUT_MS.
+  const [openProblem, setOpenProblem] = useState<"missing" | "error" | "slow" | null>(null);
   const pendingWordRef = useRef<string | null>(null);
+  // Highlight controls exposed by ReaderEngine (lives inside ReaderProvider).
+  const readerApiRef = useRef<any>(null);
 
   // Debounce refs to suppress swipe-triggered selections
   const lastPageChangeTs = useRef<number>(0);
   const lastSelectionTs = useRef<number>(0);
 
   const fs = useLegacyFileSystem();
-  const { savedBooks, addSnippet, updateStatus } = useLibrary();
+  const {
+    savedBooks,
+    addSnippet,
+    updateSnippetColor,
+    removeSnippet,
+    updateStatus,
+    startDownload,
+  } = useLibrary();
   const { scheme, readerPrefs, updateReaderPrefs } = useAppTheme();
   const readerTheme = resolveReaderTheme(readerPrefs.theme, scheme);
   const readerFont = resolveReaderFont(readerPrefs.font);
   const { width: screenWidth } = useWindowDimensions();
   const isLargeScreen = screenWidth >= LARGE_SCREEN_THRESHOLD;
+  const scrolled = readerPrefs.flow === "scrolled";
+  const pageEdge = PAGE_VERTICAL_INSET + readerPrefs.margin;
+  const percentText = `${Math.round(progress.percent * 100)}%`;
+
+  // Always-current snippets for callbacks the reader captures once.
+  const snippets: Snippet[] = useMemo(
+    () => savedBooks.find((b: any) => b.id === book?.id)?.snippets || [],
+    [savedBooks, book?.id],
+  );
+  const snippetsRef = useRef(snippets);
+  snippetsRef.current = snippets;
 
   // ── Boot / teardown ──
   useEffect(() => {
     if (visible && epubUri) {
-      const timer = setTimeout(() => setIsReady(true), 600);
-      return () => clearTimeout(timer);
+      let cancelled = false;
+      const timer = setTimeout(async () => {
+        // A missing file would otherwise leave the reader on "Opening..." forever.
+        const info = await FileSystem.getInfoAsync(epubUri).catch(() => null);
+        if (cancelled) return;
+        if (info?.exists) setIsReady(true);
+        else setOpenProblem("missing");
+      }, 600);
+      return () => {
+        cancelled = true;
+        clearTimeout(timer);
+      };
     } else {
       setIsReady(false);
+      setBookOpened(false);
+      setOpenProblem(null);
       setSectionLabel("");
       setShowUI(true);
       setPageInfo(null);
       setTocData([]);
     }
   }, [visible, epubUri]);
+
+  // If the book still hasn't opened after a while, say so instead of
+  // leaving the reader on "Opening..." with no way forward.
+  useEffect(() => {
+    if (!isReady || bookOpened) return;
+    const timer = setTimeout(
+      () => setOpenProblem((p) => p ?? "slow"),
+      OPEN_TIMEOUT_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [isReady, bookOpened]);
+
+  const handleBookOpened = useCallback(() => {
+    setBookOpened(true);
+    setOpenProblem(null);
+  }, []);
+
+  const handleOpenError = useCallback((reason: string) => {
+    console.warn("EPUB failed to open:", reason);
+    setOpenProblem("error");
+  }, []);
+
+  const redownload = (textOnly: boolean) => {
+    onClose();
+    startDownload(book, { textOnly });
+    Alert.alert(
+      "Downloading",
+      textOnly
+        ? `Downloading the text-only edition of "${book.title}". It will open normally once it's ready.`
+        : `Downloading "${book.title}" again. It will be ready in your library shortly.`,
+    );
+  };
 
   // Auto-set status to "reading" when opening a "toread" book
   useEffect(() => {
@@ -414,8 +553,57 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
           definition === "NOT_DOWNLOADED"
             ? "Dictionary needed"
             : definition || "Not found",
+        // Kept so the word itself can be highlighted from the popup.
+        selectedText: cleanText,
+        cfi,
       });
     }
+  }, []);
+
+  // ── Highlights (stored as snippets with a color) ──
+  const handleHighlight = async (color: string) => {
+    const data = popupData;
+    if (!book?.id || !data?.cfi) return;
+    setPopupData(null);
+    const api = readerApiRef.current;
+
+    if (data.type === "highlight") {
+      // Recolor an existing highlight.
+      await updateSnippetColor(book.id, data.snippetId, color);
+      api?.removeHighlight(data.cfi);
+      api?.addHighlight(data.cfi, color, data.snippetId);
+      return;
+    }
+
+    const text = data.type === "snippet" ? data.content : data.selectedText;
+    const snippet = await addSnippet(book.id, text, data.cfi, color);
+    if (!snippet) {
+      Alert.alert("Couldn't Highlight", "Add this book to your library to save highlights.");
+      return;
+    }
+    api?.addHighlight(data.cfi, color, snippet.id);
+    api?.clearSelection();
+  };
+
+  const handleRemoveHighlight = async () => {
+    const data = popupData;
+    if (!book?.id || data?.type !== "highlight") return;
+    setPopupData(null);
+    readerApiRef.current?.removeHighlight(data.cfi);
+    await removeSnippet(book.id, data.snippetId);
+  };
+
+  // Tapping a highlight in the page opens it for recolor / delete.
+  const handlePressHighlight = useCallback((snippetId: string) => {
+    const s = snippetsRef.current.find((x) => x.id === snippetId);
+    if (!s?.cfi) return;
+    setPopupData({
+      type: "highlight",
+      content: s.text,
+      cfi: s.cfi,
+      snippetId: s.id,
+      color: s.color,
+    });
   }, []);
 
   // ── External links ──
@@ -526,7 +714,7 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
 
   // ── TOC chapter select ──
   const handleSelectChapter = useCallback((href: string) => {
-    setTocTarget(href);
+    readerApiRef.current?.goToHref(href);
   }, []);
 
   // ── Guard ──
@@ -571,7 +759,7 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
                 ) : null}
               </View>
               <Text style={[styles.progressText, { color: readerTheme.link }]}>
-                {Math.round(progress.percent * 100)}%
+                {percentText}
               </Text>
             </View>
           )}
@@ -580,58 +768,88 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
           <View style={styles.readerContainer}>
             {isReady ? (
               <>
-                <ReaderEngine
-                  epubUri={epubUri}
-                  fs={fs}
-                  initialLocation={savedCfi}
-                  handleSelection={handleSelection}
-                  handleExternalLink={handleExternalLink}
-                  readerTheme={readerTheme}
-                  readerFont={readerFont}
-                  fontSize={readerPrefs.fontSize}
-                  bookId={book.id}
-                  setProgress={setProgress}
-                  setPageInfo={setPageInfo}
-                  setSectionLabel={setSectionLabel}
-                  onBookFinished={handleBookFinished}
-                  setTocData={setTocData}
-                  toggleUI={toggleUI}
-                  onPageChanged={handlePageChanged}
-                />
-                {/* Invisible component to navigate when TOC item is tapped */}
-                <TocNavigator
-                  targetHref={tocTarget}
-                  onDone={() => setTocTarget(null)}
-                />
-                {/* Always show page-turn buttons; compact on small screens */}
-                <PageTurnerButtons
-                  compact={!isLargeScreen}
-                  color={readerTheme.muted}
-                />
-                {/* Floating button to exit immersive mode */}
-                {!showUI && (
-                  <TouchableOpacity
-                    onPress={() => setShowUI(true)}
-                    style={[
-                      styles.immersiveExitBtn,
-                      { backgroundColor: readerTheme.chrome, borderColor: readerTheme.border },
-                    ]}
-                    activeOpacity={0.7}
-                  >
-                    <Ionicons
-                      name="contract-outline"
-                      size={16}
-                      color={readerTheme.muted}
-                    />
-                  </TouchableOpacity>
+                {/* The page margin applies on all sides; epub.js re-flows on resize. */}
+                <View
+                  style={[
+                    styles.readerFrame,
+                    { paddingHorizontal: readerPrefs.margin, paddingVertical: pageEdge },
+                  ]}
+                >
+                  <ReaderEngine
+                    // Switching between pages and scrolling needs a fresh
+                    // epub.js rendition; it reopens at the saved place.
+                    key={readerPrefs.flow}
+                    epubUri={epubUri}
+                    fs={fs}
+                    initialLocation={savedCfi}
+                    handleSelection={handleSelection}
+                    handleExternalLink={handleExternalLink}
+                    readerTheme={readerTheme}
+                    readerFont={readerFont}
+                    fontSize={readerPrefs.fontSize}
+                    lineHeight={readerPrefs.lineHeight}
+                    flow={readerPrefs.flow}
+                    bookId={book.id}
+                    highlights={snippets.filter((s) => s.color && s.cfi)}
+                    readerApiRef={readerApiRef}
+                    onBookOpened={handleBookOpened}
+                    onOpenError={handleOpenError}
+                    onPressHighlight={handlePressHighlight}
+                    setProgress={setProgress}
+                    setPageInfo={setPageInfo}
+                    setSectionLabel={setSectionLabel}
+                    onBookFinished={handleBookFinished}
+                    setTocData={setTocData}
+                    toggleUI={toggleUI}
+                    onPageChanged={handlePageChanged}
+                  />
+                </View>
+                {/* Page-turn buttons in page mode; compact on small screens */}
+                {!scrolled && (
+                  <PageTurnerButtons
+                    compact={!isLargeScreen}
+                    color={readerTheme.muted}
+                  />
                 )}
               </>
-            ) : (
+            ) : !openProblem ? (
               <View style={styles.center}>
                 <ActivityIndicator color={readerTheme.link} size="large" />
               </View>
+            ) : null}
+
+            {openProblem && (
+              <OpenProblemCard
+                problem={openProblem}
+                theme={readerTheme}
+                // Gutenberg books can be fetched again; imported files can't.
+                canRedownload={!isImportedBook(book)}
+                onKeepWaiting={() => setOpenProblem(null)}
+                onRedownload={() => redownload(false)}
+                onTextOnly={() => redownload(true)}
+                onClose={onClose}
+              />
             )}
           </View>
+
+          {/* ─ Immersive bar: sits below the page so it never covers text ─ */}
+          {isReady && !showUI && (
+            <View style={styles.immersiveBar}>
+              <Text style={[styles.pageInfoText, { color: readerTheme.muted, paddingTop: 0 }]}>
+                {!scrolled && pageInfo
+                  ? `Page ${pageInfo.page} of ${pageInfo.total}`
+                  : percentText}
+              </Text>
+              <TouchableOpacity
+                onPress={() => setShowUI(true)}
+                style={styles.immersiveExitBtn}
+                hitSlop={10}
+                accessibilityLabel="Show controls"
+              >
+                <Ionicons name="contract-outline" size={16} color={readerTheme.muted} />
+              </TouchableOpacity>
+            </View>
+          )}
 
           {/* ─ Footer ─ */}
           {isReady && showUI && (
@@ -642,7 +860,7 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
               ]}
             >
               {/* Page info */}
-              {pageInfo && (
+              {pageInfo && !scrolled && (
                 <Text style={[styles.pageInfoText, { color: readerTheme.muted }]}>
                   Page {pageInfo.page} of {pageInfo.total}
                 </Text>
@@ -707,6 +925,8 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
             downloading={dictDownloading}
             downloadProgress={dictProgress}
             onDownload={() => handleDownloadDictionary(popupData?.word)}
+            onHighlight={handleHighlight}
+            onRemoveHighlight={handleRemoveHighlight}
             theme={readerTheme}
           />
 
@@ -748,6 +968,139 @@ const InternalScrubber = ({ progress, screenWidth, theme }: any) => {
     />
   );
 };
+
+// ─── Shown when a book can't be opened (instead of "Opening..." forever) ─────
+const OPEN_PROBLEM_TEXT = {
+  missing: {
+    title: "Book file missing",
+    body: "The downloaded file for this book couldn't be found. Download it again to keep reading — your place and snippets are kept.",
+  },
+  error: {
+    title: "Couldn't open this book",
+    body: "This file couldn't be displayed. Downloading it again usually fixes this. If it keeps happening, try the text-only edition.",
+  },
+  slow: {
+    title: "Still opening…",
+    body: "This is taking longer than usual. Illustrated editions can be very large for some devices — the text-only edition opens much faster.",
+  },
+};
+
+const OpenProblemCard = ({
+  problem,
+  theme,
+  canRedownload,
+  onKeepWaiting,
+  onRedownload,
+  onTextOnly,
+  onClose,
+}: {
+  problem: "missing" | "error" | "slow";
+  theme: ReaderTheme;
+  canRedownload: boolean;
+  onKeepWaiting: () => void;
+  onRedownload: () => void;
+  onTextOnly: () => void;
+  onClose: () => void;
+}) => {
+  const text = OPEN_PROBLEM_TEXT[problem];
+  const button = (label: string, onPress: () => void, primary = false) => (
+    <TouchableOpacity
+      key={label}
+      onPress={onPress}
+      style={[
+        styles.problemBtn,
+        primary
+          ? { backgroundColor: theme.link, borderColor: theme.link }
+          : { borderColor: theme.border },
+      ]}
+    >
+      <Text
+        style={[
+          styles.problemBtnText,
+          { color: primary ? theme.background : theme.text },
+        ]}
+      >
+        {label}
+      </Text>
+    </TouchableOpacity>
+  );
+
+  return (
+    <View style={[styles.problemOverlay, { backgroundColor: theme.background }]}>
+      <View style={[styles.problemCard, { backgroundColor: theme.chrome, borderColor: theme.border }]}>
+        <Ionicons
+          name={problem === "slow" ? "hourglass-outline" : "alert-circle-outline"}
+          size={36}
+          color={theme.link}
+        />
+        <Text style={[styles.problemTitle, { color: theme.text }]}>{text.title}</Text>
+        <Text style={[styles.problemBody, { color: theme.muted }]}>
+          {canRedownload ? text.body : "This imported file couldn't be opened. Try importing it again."}
+        </Text>
+        <View style={styles.problemActions}>
+          {canRedownload && problem !== "missing" && button("Get Text-only Edition", onTextOnly, true)}
+          {canRedownload && problem !== "slow" && button("Download Again", onRedownload, problem === "missing")}
+          {problem === "slow" && button("Keep Waiting", onKeepWaiting)}
+          {button("Close", onClose)}
+        </View>
+      </View>
+    </View>
+  );
+};
+
+// ─── Segmented picker used by the settings sheet ─────────────────────────────
+const Segmented = <T extends string | number>({
+  options,
+  value,
+  onChange,
+  theme,
+  renderIcon,
+}: {
+  options: { value: T; label: string }[];
+  value: T;
+  onChange: (v: T) => void;
+  theme: ReaderTheme;
+  renderIcon?: (v: T, color: string) => React.ReactNode;
+}) => (
+  <View style={[styles.segmented, { borderColor: theme.border }]}>
+    {options.map((o) => {
+      const active = o.value === value;
+      const color = active ? theme.link : theme.muted;
+      return (
+        <TouchableOpacity
+          key={o.value}
+          onPress={() => onChange(o.value)}
+          style={[styles.segment, active && { backgroundColor: theme.background }]}
+          accessibilityLabel={o.label}
+          accessibilityState={{ selected: active }}
+        >
+          {renderIcon?.(o.value, color)}
+          <Text style={[styles.segmentText, { color }]}>{o.label}</Text>
+        </TouchableOpacity>
+      );
+    })}
+  </View>
+);
+
+// Little page diagrams so the options read at a glance.
+const MarginIcon = ({ margin, color }: { margin: number; color: string }) => {
+  const inset = [1, 3, 5, 7][READER_MARGINS.findIndex((m) => m.value === margin)] ?? 1;
+  return (
+    <View style={[styles.miniPage, { borderColor: color, paddingHorizontal: inset }]}>
+      {[0, 1, 2, 3].map((i) => (
+        <View key={i} style={[styles.miniLine, { backgroundColor: color }]} />
+      ))}
+    </View>
+  );
+};
+
+const LineHeightIcon = ({ lineHeight, color }: { lineHeight: number; color: string }) => (
+  <View style={[styles.miniLines, { gap: Math.round((lineHeight - 1) * 6) + 1 }]}>
+    {[0, 1, 2].map((i) => (
+      <View key={i} style={[styles.miniLine, { backgroundColor: color }]} />
+    ))}
+  </View>
+);
 
 // ─── Reading settings sheet ──────────────────────────────────────────────────
 const ReaderSettingsSheet = ({
@@ -849,6 +1202,7 @@ const ReaderSettingsSheet = ({
             </TouchableOpacity>
           </View>
 
+          <ScrollView bounces={false} showsVerticalScrollIndicator={false}>
           <Text style={[styles.sheetLabel, { color: theme.muted }]}>THEME</Text>
           <ScrollView
             horizontal
@@ -907,6 +1261,40 @@ const ReaderSettingsSheet = ({
               </Text>
             </TouchableOpacity>
           </View>
+
+          <Text style={[styles.sheetLabel, { color: theme.muted }]}>PAGE TURNING</Text>
+          <Segmented
+            options={READER_FLOWS}
+            value={prefs.flow}
+            onChange={(flow) => onChange({ flow })}
+            theme={theme}
+            renderIcon={(v, color) => (
+              <Ionicons
+                name={v === "scrolled" ? "swap-vertical-outline" : "book-outline"}
+                size={18}
+                color={color}
+              />
+            )}
+          />
+
+          <Text style={[styles.sheetLabel, { color: theme.muted }]}>PAGE MARGINS</Text>
+          <Segmented
+            options={READER_MARGINS}
+            value={prefs.margin}
+            onChange={(margin) => onChange({ margin })}
+            theme={theme}
+            renderIcon={(v, color) => <MarginIcon margin={v} color={color} />}
+          />
+
+          <Text style={[styles.sheetLabel, { color: theme.muted }]}>LINE SPACING</Text>
+          <Segmented
+            options={READER_LINE_HEIGHTS}
+            value={prefs.lineHeight}
+            onChange={(lineHeight) => onChange({ lineHeight })}
+            theme={theme}
+            renderIcon={(v, color) => <LineHeightIcon lineHeight={v} color={color} />}
+          />
+          </ScrollView>
         </View>
       </View>
     </Modal>
@@ -937,6 +1325,7 @@ const styles = StyleSheet.create({
   progressText: { fontSize: 11, fontWeight: "bold" },
   // Reader
   readerContainer: { flex: 1 },
+  readerFrame: { flex: 1 },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
   // Footer
   footer: {
@@ -981,16 +1370,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
     zIndex: 10,
   },
-  // Immersive mode exit
+  // Immersive mode bar
+  immersiveBar: {
+    height: 28,
+    justifyContent: "center",
+    alignItems: "center",
+  },
   immersiveExitBtn: {
     position: "absolute",
-    bottom: 16,
-    alignSelf: "center",
-    borderRadius: 20,
-    paddingHorizontal: 20,
-    paddingVertical: 8,
-    zIndex: 10,
-    borderWidth: 1,
+    right: 14,
+    padding: 4,
   },
   // TOC panel
   tocOverlay: {
@@ -1028,6 +1417,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     paddingBottom: 36,
+    maxHeight: "88%",
   },
   sheetLabel: {
     fontSize: 11,
@@ -1069,4 +1459,57 @@ const styles = StyleSheet.create({
   sizeSmallA: { fontSize: 15, fontWeight: "600" },
   sizeLargeA: { fontSize: 24, fontWeight: "600" },
   sizeValue: { fontSize: 14, fontWeight: "700" },
+  segmented: {
+    flexDirection: "row",
+    marginHorizontal: 16,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 3,
+    gap: 3,
+  },
+  segment: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 8,
+    borderRadius: 9,
+    gap: 5,
+  },
+  segmentText: { fontSize: 11, fontWeight: "600" },
+  miniPage: {
+    width: 20,
+    height: 24,
+    borderWidth: 1.5,
+    borderRadius: 3,
+    justifyContent: "center",
+    gap: 2.5,
+  },
+  miniLines: { width: 18, height: 24, justifyContent: "center" },
+  miniLine: { height: 1.5, borderRadius: 1 },
+  // Book-won't-open card
+  problemOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+    zIndex: 20,
+  },
+  problemCard: {
+    width: "100%",
+    maxWidth: 420,
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 22,
+    alignItems: "center",
+  },
+  problemTitle: { fontSize: 17, fontWeight: "700", marginTop: 10, textAlign: "center" },
+  problemBody: { fontSize: 14, lineHeight: 20, marginTop: 8, textAlign: "center" },
+  problemActions: { alignSelf: "stretch", marginTop: 18, gap: 10 },
+  problemBtn: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  problemBtnText: { fontSize: 15, fontWeight: "600" },
 });

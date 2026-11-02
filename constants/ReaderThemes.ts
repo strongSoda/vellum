@@ -125,24 +125,69 @@ export const resolveReaderFont = (id: string): ReaderFont =>
 // ── Font sizes (percent of the book's base size) ─────────────────────────────
 export const READER_FONT_SIZES = [80, 90, 100, 110, 120, 135, 150, 175];
 
+// ── Page margins (extra side space, in px, on top of the book's own) ─────────
+export const READER_MARGINS = [
+  { value: 0, label: "None" },
+  { value: 16, label: "Small" },
+  { value: 32, label: "Medium" },
+  { value: 52, label: "Large" },
+];
+
+// ── Line spacing (CSS line-height) ───────────────────────────────────────────
+export const READER_LINE_HEIGHTS = [
+  { value: 1.2, label: "Tight" },
+  { value: 1.4, label: "Snug" },
+  { value: 1.6, label: "Normal" },
+  { value: 1.8, label: "Relaxed" },
+  { value: 2.0, label: "Loose" },
+];
+
+// ── Page flow: turn pages, or scroll the book like a web page ────────────────
+export type ReaderFlow = "paginated" | "scrolled";
+export const READER_FLOWS: { value: ReaderFlow; label: string }[] = [
+  { value: "paginated", label: "Pages" },
+  { value: "scrolled", label: "Scroll" },
+];
+
+// ── Highlighter colors ───────────────────────────────────────────────────────
+export const HIGHLIGHT_COLORS = [
+  { id: "yellow", label: "Yellow", color: "#FFD60A" },
+  { id: "green", label: "Green", color: "#4ADE80" },
+  { id: "blue", label: "Blue", color: "#60A5FA" },
+  { id: "pink", label: "Pink", color: "#F472B6" },
+  { id: "orange", label: "Orange", color: "#FB923C" },
+];
+export const HIGHLIGHT_OPACITY = 0.35;
+
 export type ReaderPrefs = {
   theme: ReaderThemeId;
   font: string; // ReaderFont id
   fontSize: number; // one of READER_FONT_SIZES
+  margin: number; // one of READER_MARGINS values
+  lineHeight: number; // one of READER_LINE_HEIGHTS values
+  flow: ReaderFlow;
 };
 
 export const DEFAULT_READER_PREFS: ReaderPrefs = {
   theme: "auto",
   font: "georgia",
   fontSize: 100,
+  margin: 0,
+  lineHeight: 1.6,
+  flow: "paginated",
 };
 
 /** Stylesheet handed to epub.js for the book's pages. */
-export const buildEpubTheme = (theme: ReaderTheme, font: ReaderFont) => ({
+export const buildEpubTheme = (
+  theme: ReaderTheme,
+  font: ReaderFont,
+  lineHeight: number = DEFAULT_READER_PREFS.lineHeight,
+) => ({
   body: {
     background: `${theme.background} !important`,
     color: `${theme.text} !important`,
     "font-family": `${font.css} !important`,
+    "line-height": `${lineHeight} !important`,
   },
   "p, div, span, li, blockquote, h1, h2, h3, h4, h5, h6, td, th, dt, dd, em, strong, i, b, small, cite": {
     color: "inherit !important",
@@ -150,6 +195,7 @@ export const buildEpubTheme = (theme: ReaderTheme, font: ReaderFont) => ({
   },
   "p, div, li, blockquote, td, dd": {
     "font-family": "inherit !important",
+    "line-height": `${lineHeight} !important`,
   },
   "a, a:link, a:visited": {
     color: `${theme.link} !important`,

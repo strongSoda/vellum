@@ -29,6 +29,8 @@ export type Snippet = {
   text: string;
   cfi?: string;
   createdAt: number;
+  /** Set when the snippet is also a highlight drawn in the book. */
+  color?: string;
 };
 export type SavedBook = {
   id: number;
@@ -58,10 +60,16 @@ type LibraryContextType = {
   updateStatus: (id: number, status: BookStatus) => Promise<void>;
   updateNotes: (id: number, notes: string) => Promise<void>;
   checkBookStatus: (id: number) => SavedBook | undefined;
-  startDownload: (book: any) => Promise<void>;
+  startDownload: (book: any, opts?: { textOnly?: boolean }) => Promise<void>;
   updateLocation: (id: number, cfi: string) => Promise<void>;
   importBook: (sourceUri: string, fileName?: string) => Promise<SavedBook>;
-  addSnippet: (id: number, text: string, cfi?: string) => Promise<boolean>;
+  addSnippet: (
+    id: number,
+    text: string,
+    cfi?: string,
+    color?: string,
+  ) => Promise<Snippet | null>;
+  updateSnippetColor: (id: number, snippetId: string, color?: string) => Promise<void>;
   removeSnippet: (id: number, snippetId: string) => Promise<void>;
 };
 
@@ -105,69 +113,132 @@ try {
   });
 } catch (e) {}
 
-// ── Download helper with progress callback ───────────────────────────────────
-const downloadFileWithProgress = async (
+// ── Download helpers with progress callback ──────────────────────────────────
+// Streams straight to disk, so large illustrated books (15MB+) never have to
+// fit in JS memory.
+const downloadNative = async (
   url: string,
   destPath: string,
   onProgress?: (progress: number) => void,
 ): Promise<boolean> => {
+  const downloadResumable = FileSystem.createDownloadResumable(
+    url,
+    destPath,
+    {},
+    (downloadProgress) => {
+      if (downloadProgress.totalBytesExpectedToWrite > 0) {
+        const pct =
+          downloadProgress.totalBytesWritten /
+          downloadProgress.totalBytesExpectedToWrite;
+        onProgress?.(pct);
+      }
+    },
+  );
+  const result = await downloadResumable.downloadAsync();
+  return result?.status === 200;
+};
+
+// iOS fallback: XHR + blob, written out as base64. Holds the whole file in
+// memory, so it is only used if the native download fails.
+const downloadViaXhr = async (
+  url: string,
+  destPath: string,
+  onProgress?: (progress: number) => void,
+): Promise<boolean> => {
+  const base64 = await new Promise<string>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("GET", url, true);
+    xhr.responseType = "blob";
+
+    xhr.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        onProgress?.(event.loaded / event.total);
+      }
+    };
+
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(`HTTP ${xhr.status}`));
+        return;
+      }
+      const blob = xhr.response as Blob;
+      const reader = new FileReader();
+      reader.onloadend = () =>
+        resolve((reader.result as string).split(",")[1]);
+      reader.onerror = () => reject(new Error("FileReader failed"));
+      reader.readAsDataURL(blob);
+    };
+
+    xhr.onerror = () => reject(new Error("XHR network error"));
+    xhr.send();
+  });
+
+  await FileSystem.writeAsStringAsync(destPath, base64, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  return true;
+};
+
+// An EPUB is a zip archive, so a good download starts with "PK". Anything
+// else (an HTML error page, an empty or cut-off file) would leave the reader
+// stuck on "Opening...".
+const isValidEpubFile = async (path: string) => {
   try {
-    if (Platform.OS === "android") {
-      // Android: use createDownloadResumable for progress tracking
-      const downloadResumable = FileSystem.createDownloadResumable(
-        url,
-        destPath,
-        {},
-        (downloadProgress) => {
-          if (downloadProgress.totalBytesExpectedToWrite > 0) {
-            const pct =
-              downloadProgress.totalBytesWritten /
-              downloadProgress.totalBytesExpectedToWrite;
-            onProgress?.(pct);
-          }
-        },
-      );
-      const result = await downloadResumable.downloadAsync();
-      return result?.status === 200;
-    } else {
-      // iOS: fetch + blob approach (proven stable on iOS in this codebase).
-      // Use XMLHttpRequest for progress tracking instead of bare fetch.
-      const base64 = await new Promise<string>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("GET", url, true);
-        xhr.responseType = "blob";
-
-        xhr.onprogress = (event) => {
-          if (event.lengthComputable && event.total > 0) {
-            onProgress?.(event.loaded / event.total);
-          }
-        };
-
-        xhr.onload = () => {
-          if (xhr.status < 200 || xhr.status >= 300) {
-            reject(new Error(`HTTP ${xhr.status}`));
-            return;
-          }
-          const blob = xhr.response as Blob;
-          const reader = new FileReader();
-          reader.onloadend = () =>
-            resolve((reader.result as string).split(",")[1]);
-          reader.onerror = () => reject(new Error("FileReader failed"));
-          reader.readAsDataURL(blob);
-        };
-
-        xhr.onerror = () => reject(new Error("XHR network error"));
-        xhr.send();
-      });
-
-      await FileSystem.writeAsStringAsync(destPath, base64, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-      return true;
-    }
+    const info = await FileSystem.getInfoAsync(path);
+    if (!info.exists || !info.size || info.size < 1024) return false;
+    const head = await FileSystem.readAsStringAsync(path, {
+      encoding: FileSystem.EncodingType.Base64,
+      position: 0,
+      length: 4,
+    });
+    return head.startsWith("UEs"); // base64 of "PK"
   } catch {
     return false;
   }
+};
+
+/**
+ * Downloads into a temp file and only moves it to `destPath` once it is
+ * complete (and, for EPUBs, verified), so a failed download never leaves a
+ * broken book behind.
+ */
+const downloadFileWithProgress = async (
+  url: string,
+  destPath: string,
+  onProgress?: (progress: number) => void,
+  { isEpub = false } = {},
+): Promise<boolean> => {
+  const tempPath = destPath + ".part";
+  const isGood = async () => {
+    if (isEpub) return isValidEpubFile(tempPath);
+    const info = await FileSystem.getInfoAsync(tempPath);
+    return info.exists && !!info.size;
+  };
+  const attempts =
+    Platform.OS === "ios" ? [downloadNative, downloadViaXhr] : [downloadNative];
+
+  for (const attempt of attempts) {
+    try {
+      await FileSystem.deleteAsync(tempPath, { idempotent: true });
+      onProgress?.(0);
+      if ((await attempt(url, tempPath, onProgress)) && (await isGood())) {
+        await FileSystem.deleteAsync(destPath, { idempotent: true });
+        await FileSystem.moveAsync({ from: tempPath, to: destPath });
+        return true;
+      }
+    } catch (e) {
+      console.warn("Download attempt failed:", url, e);
+    }
+  }
+  await FileSystem.deleteAsync(tempPath, { idempotent: true }).catch(() => {});
+  return false;
+};
+
+// Project Gutenberg offers each book as an illustrated EPUB and a smaller
+// text-only one; this maps the illustrated URL to the text-only one.
+const textOnlyEpubUrl = (url: string) => {
+  const textOnly = url.replace(/\.epub3?\.images$/, ".epub.noimages");
+  return textOnly !== url ? textOnly : null;
 };
 
 export const LibraryProvider = ({
@@ -235,7 +306,7 @@ export const LibraryProvider = ({
     await AsyncStorage.setItem("@vellum_lib_v10", JSON.stringify(newData));
   };
 
-  const startDownload = async (book: any) => {
+  const startDownload = async (book: any, { textOnly = false } = {}) => {
     if (activeDownload) return;
     setActiveDownload(book);
     setDownloadProgress(0);
@@ -257,23 +328,31 @@ export const LibraryProvider = ({
         .substring(0, 30);
 
       // ── EPUB download ──
-      const epubUrl = book.formats["application/epub+zip"];
-      let epubUri = undefined;
+      // Illustrated edition first; if it fails (or the reader asked for it),
+      // fall back to the smaller text-only edition.
+      const epubUrl: string | undefined = book.formats["application/epub+zip"];
+      const textOnlyUrl = epubUrl ? textOnlyEpubUrl(epubUrl) : null;
+      const epubUrls = [
+        ...(epubUrl && !(textOnly && textOnlyUrl) ? [epubUrl] : []),
+        ...(textOnlyUrl ? [textOnlyUrl] : []),
+      ];
+      let epubUri: string | undefined = undefined;
 
-      if (epubUrl) {
+      for (const url of epubUrls) {
         const epubPath = booksDir + `${safeTitle}_${book.id}.epub`;
-        const epubInfo = await FileSystem.getInfoAsync(epubPath);
-        if (epubInfo.exists) await FileSystem.deleteAsync(epubPath);
-
         const success = await downloadFileWithProgress(
-          epubUrl,
+          url,
           epubPath,
           (p) => {
             // epub is the primary format — map its progress to 0–0.85
             setDownloadProgress(p * 0.85);
           },
+          { isEpub: true },
         );
-        if (success) epubUri = epubPath;
+        if (success) {
+          epubUri = epubPath;
+          break;
+        }
       }
 
       // ── HTML fallback download ──
@@ -283,9 +362,6 @@ export const LibraryProvider = ({
 
       if (htmlUrl) {
         const htmlPath = booksDir + `${safeTitle}_${book.id}.html`;
-        const htmlInfo = await FileSystem.getInfoAsync(htmlPath);
-        if (htmlInfo.exists) await FileSystem.deleteAsync(htmlPath);
-
         const success = await downloadFileWithProgress(
           htmlUrl,
           htmlPath,
@@ -299,20 +375,44 @@ export const LibraryProvider = ({
         if (success) htmlUri = htmlPath;
       }
 
+      // A failed re-download leaves the previous copy untouched — keep it if
+      // it is still good.
+      const previous = savedBooksRef.current.find((b) => b.id === book.id);
+      if (!epubUri && previous?.localUri && (await isValidEpubFile(previous.localUri))) {
+        epubUri = previous.localUri;
+      }
+      if (!htmlUri && previous?.readerUri) {
+        const info = await FileSystem.getInfoAsync(previous.readerUri);
+        if (info.exists) htmlUri = previous.readerUri;
+      }
+
       if (!epubUri && !htmlUri) {
         throw new Error("No files downloaded");
       }
 
       setDownloadProgress(1);
 
-      await saveBook(book, "reading", epubUri, htmlUri);
-
-      console.log(
-        "book, reading, epubUri, htmlUri",
-        book,
-        "reading",
-        epubUri,
-        htmlUri,
+      // Record exactly the files we have now: an older path may point at a
+      // file that no longer exists, which would leave the reader stuck.
+      await persist(
+        previous
+          ?savedBooksRef.current.map((b) =>
+              b.id === book.id
+                ? { ...b, status: "reading", localUri: epubUri, readerUri: htmlUri }
+                : b,
+            )
+          : [
+              ...savedBooksRef.current,
+              {
+                id: book.id,
+                book,
+                status: "reading",
+                notes: "",
+                dateAdded: Date.now(),
+                localUri: epubUri,
+                readerUri: htmlUri,
+              },
+            ],
       );
 
       setTimeout(() => triggerAppRating(), 1500);
@@ -406,21 +506,46 @@ export const LibraryProvider = ({
     await persist(updated);
   };
 
-  const addSnippet = async (id: number, text: string, cfi?: string) => {
+  const addSnippet = async (
+    id: number,
+    text: string,
+    cfi?: string,
+    color?: string,
+  ) => {
     const clean = text.trim();
-    if (!clean || !savedBooksRef.current.some((b) => b.id === id)) return false;
+    if (!clean || !savedBooksRef.current.some((b) => b.id === id)) return null;
     const snippet: Snippet = {
       id: `${id}-${Date.now()}`,
       text: clean,
       cfi,
       createdAt: Date.now(),
+      ...(color ? { color } : {}),
     };
     await persist(
       savedBooksRef.current.map((b) =>
         b.id === id ? { ...b, snippets: [...(b.snippets || []), snippet] } : b,
       ),
     );
-    return true;
+    return snippet;
+  };
+
+  const updateSnippetColor = async (
+    id: number,
+    snippetId: string,
+    color?: string,
+  ) => {
+    await persist(
+      savedBooksRef.current.map((b) =>
+        b.id === id
+          ? {
+              ...b,
+              snippets: (b.snippets || []).map((s) =>
+                s.id === snippetId ? { ...s, color } : s,
+              ),
+            }
+          : b,
+      ),
+    );
   };
 
   const removeSnippet = async (id: number, snippetId: string) => {
@@ -509,6 +634,7 @@ export const LibraryProvider = ({
         updateLocation,
         importBook,
         addSnippet,
+        updateSnippetColor,
         removeSnippet,
       }}
     >
