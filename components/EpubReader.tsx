@@ -62,6 +62,42 @@ const OPEN_TIMEOUT_MS = 25000;
 // lines never touch the header, footer or screen edge.
 const PAGE_VERTICAL_INSET = 12;
 
+// Reopens the book at the saved place. A plain rendition.display(cfi) can be
+// undone: any resize of the reader while it's loading makes epub.js re-show
+// the page it was on (page one). So keep re-asserting the jump until it has
+// landed, for a few seconds at most, or until the reader navigates themselves.
+const restoreLocationJs = (cfi: string) => `
+(function () {
+  try {
+    var target = ${JSON.stringify(cfi)};
+    var deadline = Date.now() + 6000;
+    var cfiTool = new ePub.CFI();
+    function landed(loc) {
+      try {
+        return cfiTool.compare(loc.start.cfi, target) <= 0 &&
+          cfiTool.compare(loc.end.cfi, target) >= 0;
+      } catch (e) { return true; }
+    }
+    function stop() {
+      rendition.off('relocated', onRelocated);
+      window.__vellumCancelRestore = null;
+    }
+    function onRelocated(loc) {
+      if (Date.now() > deadline || landed(loc)) return stop();
+      rendition.display(target);
+    }
+    window.__vellumCancelRestore = stop;
+    rendition.on('relocated', onRelocated);
+    rendition.display(target);
+  } catch (e) {}
+})();
+true;
+`;
+
+// Run before any navigation the reader asks for, so the restore above
+// doesn't pull them back.
+const CANCEL_RESTORE_JS = `window.__vellumCancelRestore && window.__vellumCancelRestore(); true;`;
+
 // Jumps to a table-of-contents entry. TOC hrefs are relative to the book's
 // nav file, which isn't always next to the chapters, so a plain
 // rendition.display(href) silently finds no section in many books. Match the
@@ -69,6 +105,7 @@ const PAGE_VERTICAL_INSET = 12;
 const goToHrefJs = (href: string) => `
 (function () {
   try {
+    window.__vellumCancelRestore && window.__vellumCancelRestore();
     var href = ${JSON.stringify(href)};
     var parts = href.split('#');
     var path = parts[0], hash = parts[1];
@@ -126,7 +163,6 @@ const ReaderEngine = ({
 }: any) => {
   const { updateLocation } = useLibrary();
   const {
-    goToLocation,
     changeTheme,
     changeFontFamily,
     changeFontSize,
@@ -194,7 +230,7 @@ const ReaderEngine = ({
   // table of contents was undone when locations finished generating.)
   const stableOnReady = useCallback(() => {
     applyPrefsRef.current();
-    if (startCfi) goToLocation(startCfi);
+    if (startCfi) injectJavascript(restoreLocationJs(startCfi));
     onBookOpened();
   }, []);
 
@@ -295,20 +331,26 @@ const PageTurnerButtons = ({
   compact?: boolean;
   color: string;
 }) => {
-  const { goNext, goPrevious } = useReader();
+  const { goNext, goPrevious, injectJavascript } = useReader();
   const btnWidth = compact ? 36 : 48;
   const iconSize = compact ? 22 : 28;
   return (
     <>
       <TouchableOpacity
-        onPress={() => goPrevious()}
+        onPress={() => {
+          injectJavascript(CANCEL_RESTORE_JS);
+          goPrevious();
+        }}
         style={[styles.pageTurnLeft, { width: btnWidth }]}
         activeOpacity={0.6}
       >
         <Ionicons name="chevron-back" size={iconSize} color={color} />
       </TouchableOpacity>
       <TouchableOpacity
-        onPress={() => goNext()}
+        onPress={() => {
+          injectJavascript(CANCEL_RESTORE_JS);
+          goNext();
+        }}
         style={[styles.pageTurnRight, { width: btnWidth }]}
         activeOpacity={0.6}
       >
@@ -749,14 +791,15 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
                 >
                   {book.title}
                 </Text>
-                {sectionLabel ? (
-                  <Text
-                    style={[styles.chapterLabel, { color: readerTheme.muted }]}
-                    numberOfLines={1}
-                  >
-                    {sectionLabel}
-                  </Text>
-                ) : null}
+                {/* Always rendered (blank until known) so the header keeps
+                    one height — resizing the reader while the book opens
+                    would throw it back to page one. */}
+                <Text
+                  style={[styles.chapterLabel, { color: readerTheme.muted }]}
+                  numberOfLines={1}
+                >
+                  {sectionLabel || " "}
+                </Text>
               </View>
               <Text style={[styles.progressText, { color: readerTheme.link }]}>
                 {percentText}
@@ -859,10 +902,10 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
                 { backgroundColor: readerTheme.chrome, borderTopColor: readerTheme.border },
               ]}
             >
-              {/* Page info */}
-              {pageInfo && !scrolled && (
+              {/* Page info — kept in place while blank, same reason as the header */}
+              {!scrolled && (
                 <Text style={[styles.pageInfoText, { color: readerTheme.muted }]}>
-                  Page {pageInfo.page} of {pageInfo.total}
+                  {pageInfo ? `Page ${pageInfo.page} of ${pageInfo.total}` : " "}
                 </Text>
               )}
               <View style={styles.themeRow}>
@@ -954,7 +997,7 @@ export const EpubReaderModal = ({ visible, book, onClose, epubUri }: any) => {
 
 // ─── Sub-components (inside ReaderProvider) ──────────────────────────────────
 const InternalScrubber = ({ progress, screenWidth, theme }: any) => {
-  const { goToLocation } = useReader();
+  const { goToLocation, injectJavascript } = useReader();
   return (
     <Slider
       style={[styles.slider, { width: screenWidth - 40 }]}
@@ -964,7 +1007,10 @@ const InternalScrubber = ({ progress, screenWidth, theme }: any) => {
       minimumTrackTintColor={theme.link}
       maximumTrackTintColor={theme.border}
       thumbTintColor={theme.link}
-      onSlidingComplete={(val) => goToLocation(String(val))}
+      onSlidingComplete={(val) => {
+        injectJavascript(CANCEL_RESTORE_JS);
+        goToLocation(String(val));
+      }}
     />
   );
 };
